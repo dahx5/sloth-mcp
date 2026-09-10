@@ -2,6 +2,8 @@
 name = "choto"
 version = "0.1.0"
 description = "Local MCP server giving Claude Desktop eyes and hands on macOS (OCR-first computer use)."
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "pyobjc-framework-Quartz>=10.3",

@@ -76,3 +76,12 @@ frame.
 Accessibility API (universality beats convenience), Windows and Linux, multiple
 displays, autonomous LLM calls from the server, and — for now — a README longer
 than this one.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+One thing that is not: the icon detector. `icon_detect.mlpackage` is not shipped
+here and is not downloaded by anything in this repo — you point `model install` at
+your own copy. The YOLO-derived weights that name refers to are **AGPL-3.0**, so
+whatever you feed it comes with its own terms attached.
