@@ -14,10 +14,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-data/*
-# Bench reference frames are the exception: the vision thresholds are calibrated on them,
-# and the OCR bench cannot run without them. They are part of the repo, not local data.
-!data/fixtures/
+data/
 
 # Build
 dist/
