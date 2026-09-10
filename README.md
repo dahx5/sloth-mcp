@@ -15,6 +15,25 @@ so it works with anything that draws on screen.
 The point is not that a model can click. The point is **not paying for a screenshot
 every time it does.**
 
+## What it looks like
+
+![Calendar, 25 steps from one plan](media/calendar.gif)
+
+Five calendar entries, one call. Claude sent twenty-five steps — press `+`, type,
+Enter, escape, again — and got back one text journey saying what happened at each
+of them. Nothing was looked at in between. Real time, not sped up.
+([full quality](media/calendar.mp4))
+
+It has no idea what a calendar is. Here is the same server in a drawing app it has
+never seen, picking tools out of a toolbar and dragging shapes:
+
+![Excalidraw, thirteen steps from one plan](media/excalidraw.gif)
+
+([full quality](media/excalidraw.mp4)) — the caption drawn inside that clip
+overstates it, so: the server looks at the screen constantly, it has to. What it
+does not do is send those frames to the model. Thirteen actions, one screenshot's
+worth of tokens, and that one only if something had gone wrong.
+
 ## How it goes
 
 Claude sends a batch of semantic steps — `click "Save"`, `wait until "Export"
