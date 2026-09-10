@@ -1,0 +1,86 @@
+{
+ "steps": [
+  {
+   "action": "focus_app",
+   "app_name": "Finder",
+   "timeout_ms": 20000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "shift",
+    "g"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 8000
+  },
+  {
+   "action": "type",
+   "text": "~/choto-bench-sandbox",
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "expect": {
+    "appears": "notes-a"
+   },
+   "timeout_ms": 12000
+  },
+  {
+   "action": "click",
+   "target": {
+    "text": "notes-a.txt"
+   },
+   "timeout_ms": 8000
+  },
+  {
+   "action": "click",
+   "target": {
+    "text": "notes-c.txt"
+   },
+   "modifiers": [
+    "shift"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "c"
+   ],
+   "timeout_ms": 6000
+  },
+  {
+   "action": "double_click",
+   "target": {
+    "text": "Archive"
+   },
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 12000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "alt",
+    "v"
+   ],
+   "expect": {
+    "appears": "notes-a"
+   },
+   "timeout_ms": 15000
+  }
+ ]
+}

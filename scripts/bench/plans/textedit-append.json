@@ -1,0 +1,81 @@
+{
+ "steps": [
+  {
+   "action": "focus_app",
+   "app_name": "TextEdit",
+   "timeout_ms": 20000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "o"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 10000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "shift",
+    "g"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 8000
+  },
+  {
+   "action": "type",
+   "text": "~/choto-bench-sandbox/journal.txt",
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "expect": {
+    "appears": "line 1: opened"
+   },
+   "timeout_ms": 12000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "down"
+   ],
+   "timeout_ms": 6000
+  },
+  {
+   "action": "type",
+   "text": "line 2: closed",
+   "expect": {
+    "appears": "line 2: closed"
+   },
+   "timeout_ms": 10000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "s"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 12000
+  }
+ ]
+}

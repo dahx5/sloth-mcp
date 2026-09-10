@@ -1,0 +1,55 @@
+{
+ "steps": [
+  {
+   "action": "focus_app",
+   "app_name": "Finder",
+   "timeout_ms": 20000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "shift",
+    "g"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 8000
+  },
+  {
+   "action": "type",
+   "text": "~/choto-bench-sandbox",
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "expect": {
+    "appears": "invoice"
+   },
+   "timeout_ms": 12000
+  },
+  {
+   "action": "drag",
+   "path": [
+    {
+     "target": {
+      "text": "invoice.txt"
+     }
+    },
+    {
+     "target": {
+      "text": "Inbox"
+     }
+    }
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 15000
+  }
+ ]
+}

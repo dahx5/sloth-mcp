@@ -1,0 +1,44 @@
+# Secrets / environment
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Python tooling
+.pytest_cache/
+.ruff_cache/
+
+data/*
+# Bench reference frames are the exception: the vision thresholds are calibrated on them,
+# and the OCR bench cannot run without them. They are part of the repo, not local data.
+!data/fixtures/
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Logs / scratch
+*.log
+.cache/
+tmp/
+
+# Local databases
+*.sqlite
+*.sqlite3
+*.db
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Bench escalation reports: they contain screenshots of the live desktop.
+scripts/bench/reports/

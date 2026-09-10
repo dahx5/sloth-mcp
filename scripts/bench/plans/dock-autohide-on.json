@@ -1,0 +1,30 @@
+{
+ "steps": [
+  {
+   "action": "focus_app",
+   "app_name": "System Settings",
+   "timeout_ms": 25000
+  },
+  {
+   "action": "click",
+   "target": {
+    "text": "Desktop & Dock",
+    "region": "left"
+   },
+   "expect": {
+    "appears": "Dock"
+   },
+   "timeout_ms": 20000
+  },
+  {
+   "action": "click",
+   "target": {
+    "text": "Automatically hide and show the Dock"
+   },
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 15000
+  }
+ ]
+}

@@ -1,0 +1,30 @@
+{
+ "steps": [
+  {
+   "action": "focus_app",
+   "app_name": "System Settings",
+   "timeout_ms": 25000
+  },
+  {
+   "action": "click",
+   "target": {
+    "text": "General",
+    "region": "left"
+   },
+   "expect": {
+    "appears": "Software Update"
+   },
+   "timeout_ms": 20000
+  },
+  {
+   "action": "click",
+   "target": {
+    "text": "About"
+   },
+   "expect": {
+    "appears": "Serial"
+   },
+   "timeout_ms": 20000
+  }
+ ]
+}

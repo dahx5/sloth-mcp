@@ -1,0 +1,20 @@
+{
+ "steps": [
+  {
+   "action": "focus_app",
+   "app_name": "System Settings",
+   "timeout_ms": 25000
+  },
+  {
+   "action": "click",
+   "target": {
+    "text": "Keyboard",
+    "region": "left"
+   },
+   "expect": {
+    "appears": "Key Repeat"
+   },
+   "timeout_ms": 20000
+  }
+ ]
+}

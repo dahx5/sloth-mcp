@@ -1,0 +1,13 @@
+from __future__ import annotations
+
+
+class InputControlError(Exception): ...
+
+
+class UnknownKeyError(InputControlError): ...
+
+
+class FailsafeTriggeredError(InputControlError): ...
+
+
+class InputPermissionError(InputControlError): ...

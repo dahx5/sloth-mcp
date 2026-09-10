@@ -1,0 +1,128 @@
+{
+ "steps": [
+  {
+   "action": "focus_app",
+   "app_name": "Calculator",
+   "expect": {
+    "appears": "AC"
+   },
+   "timeout_ms": 25000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "esc"
+   ],
+   "timeout_ms": 5000
+  },
+  {
+   "action": "type",
+   "text": "128*64",
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "expect": {
+    "appears": "8,192"
+   },
+   "timeout_ms": 10000
+  },
+  {
+   "action": "focus_app",
+   "app_name": "TextEdit",
+   "timeout_ms": 20000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "n"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 10000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "shift",
+    "t"
+   ],
+   "timeout_ms": 6000
+  },
+  {
+   "action": "type",
+   "text": "8192",
+   "expect": {
+    "appears": "8192"
+   },
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "s"
+   ],
+   "expect": {
+    "appears": "Save"
+   },
+   "timeout_ms": 10000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "shift",
+    "g"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 8000
+  },
+  {
+   "action": "type",
+   "text": "~/choto-bench-sandbox",
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "a"
+   ],
+   "timeout_ms": 5000
+  },
+  {
+   "action": "type",
+   "text": "result.txt",
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "expect": {
+    "disappears": "Save"
+   },
+   "timeout_ms": 12000
+  }
+ ]
+}

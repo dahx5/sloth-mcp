@@ -1,0 +1,106 @@
+{
+ "steps": [
+  {
+   "action": "focus_app",
+   "app_name": "TextEdit",
+   "timeout_ms": 20000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "o"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 10000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "shift",
+    "g"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 8000
+  },
+  {
+   "action": "type",
+   "text": "~/choto-bench-sandbox/long.txt",
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 12000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "f"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 8000
+  },
+  {
+   "action": "type",
+   "text": "MARKER-LINE",
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 10000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "esc"
+   ],
+   "timeout_ms": 6000
+  },
+  {
+   "action": "type",
+   "text": "DONE-LINE",
+   "expect": {
+    "appears": "DONE-LINE"
+   },
+   "timeout_ms": 10000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "s"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 12000
+  }
+ ]
+}

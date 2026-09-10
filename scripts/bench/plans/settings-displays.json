@@ -1,0 +1,20 @@
+{
+ "steps": [
+  {
+   "action": "focus_app",
+   "app_name": "System Settings",
+   "timeout_ms": 25000
+  },
+  {
+   "action": "click",
+   "target": {
+    "text": "Displays",
+    "region": "left"
+   },
+   "expect": {
+    "appears": "Brightness"
+   },
+   "timeout_ms": 15000
+  }
+ ]
+}

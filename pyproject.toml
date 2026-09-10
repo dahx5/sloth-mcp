@@ -1,0 +1,78 @@
+[project]
+name = "choto"
+version = "0.1.0"
+description = "Local MCP server giving Claude Desktop eyes and hands on macOS (OCR-first computer use)."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pyobjc-framework-Quartz>=10.3",
+    "pyobjc-framework-Vision>=10.3",
+    "opencv-python>=4.10",
+    "imagehash>=4.3.1",
+    "pillow>=10.4",
+    "numpy>=1.26",
+    "rapidfuzz>=3.9",
+    "model2vec>=0.3.3",
+    # Direct, not incidental: the embedding model is resolved in the local hub
+    # cache with `local_files_only=True` and installed by `choto model install`,
+    # both through this library's own API (choto.matching.embeddings).
+    "huggingface-hub>=0.34",
+    # Runtime, not a build tool: the icon detector is a CoreML package loaded and
+    # run through this library on every fresh window read
+    # (choto.vision.iconmodel). Deliberately native CoreML rather than
+    # onnxruntime — measured here at 323 MB and 43-45 ms per frame against ~1 GB
+    # and 93 ms, which on an 8 GB machine decides it.
+    "coremltools>=8.0",
+    "sqlalchemy>=2.0.31",
+    "alembic>=1.13.2",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "structlog>=24.4",
+    "mcp>=1.2",
+    "pyobjc-framework-screencapturekit>=10.3",
+]
+
+[project.scripts]
+choto = "choto.mcpserver.__main__:main"
+choto-bridge = "choto.mcpserver.bridge:main"
+choto-overlay = "choto.overlay.__main__:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/choto"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+# Alembic-generated migration scripts are machine-written; don't lint them.
+extend-exclude = ["ops/alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+# The shared type contract in models.py mandates `class X(str, Enum)` exactly;
+# StrEnum (UP042's suggestion) would change str() semantics relied on downstream.
+ignore = ["UP042"]
+
+[tool.ruff.lint.isort]
+# `bench` is a project-local package under `scripts/` that is not installed (it
+# is run as a script), so isort must be told it is ours rather than third-party.
+known-first-party = ["bench"]
+
+[tool.ruff.format]
+quote-style = "double"

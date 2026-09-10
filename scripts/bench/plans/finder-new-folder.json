@@ -1,0 +1,63 @@
+{
+ "steps": [
+  {
+   "action": "focus_app",
+   "app_name": "Finder",
+   "timeout_ms": 20000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "shift",
+    "g"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 8000
+  },
+  {
+   "action": "type",
+   "text": "~/choto-bench-sandbox",
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 10000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "cmd",
+    "shift",
+    "n"
+   ],
+   "expect": {
+    "screen_changes": true
+   },
+   "timeout_ms": 10000
+  },
+  {
+   "action": "type",
+   "text": "Reports",
+   "timeout_ms": 8000
+  },
+  {
+   "action": "hotkey",
+   "keys": [
+    "enter"
+   ],
+   "expect": {
+    "appears": "Reports"
+   },
+   "timeout_ms": 10000
+  }
+ ]
+}
