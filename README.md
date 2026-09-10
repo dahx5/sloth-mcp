@@ -48,9 +48,20 @@ route from that map **without looking at the screen at all.**
 
 ```bash
 uv sync
-uv run choto model install --icon-detector /path/to/icon_detect.mlpackage
 uv run choto service install
 uv run choto service status
+```
+
+The commands are called `choto` — that was the project's name before it was a sloth,
+and renaming every entry point is a change for its own sake. Same thing.
+
+**Optional:** an icon detector. Without one the server reads everything by its
+visible text, which is most of a Mac; with one it also finds the controls that are
+only a glyph — the back arrow, the toolbar buttons, the switches with no label. If
+you have a CoreML `icon_detect.mlpackage`, point the server at it:
+
+```bash
+uv run choto model install --icon-detector /path/to/icon_detect.mlpackage
 ```
 
 Then point Claude Desktop at the bridge:
@@ -85,3 +96,9 @@ One thing that is not: the icon detector. `icon_detect.mlpackage` is not shipped
 here and is not downloaded by anything in this repo — you point `model install` at
 your own copy. The YOLO-derived weights that name refers to are **AGPL-3.0**, so
 whatever you feed it comes with its own terms attached.
+
+## Support
+
+There isn't any. Issues are welcome and may sit unread — this is something I built
+for my own machine and put out because it works, not a product with a roadmap.
+Forks are the faster path to whatever you need.
