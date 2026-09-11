@@ -6,8 +6,8 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "pyobjc-framework-Quartz>=10.3",
-    "pyobjc-framework-Vision>=10.3",
+    "pyobjc-framework-Quartz>=10.3; sys_platform == 'darwin'",
+    "pyobjc-framework-Vision>=10.3; sys_platform == 'darwin'",
     "opencv-python>=4.10",
     "imagehash>=4.3.1",
     "pillow>=10.4",
@@ -23,14 +23,14 @@ dependencies = [
     # (choto.vision.iconmodel). Deliberately native CoreML rather than
     # onnxruntime — measured here at 323 MB and 43-45 ms per frame against ~1 GB
     # and 93 ms, which on an 8 GB machine decides it.
-    "coremltools>=8.0",
+    "coremltools>=8.0; sys_platform == 'darwin'",
     "sqlalchemy>=2.0.31",
     "alembic>=1.13.2",
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
     "structlog>=24.4",
     "mcp>=1.2",
-    "pyobjc-framework-screencapturekit>=10.3",
+    "pyobjc-framework-screencapturekit>=10.3; sys_platform == 'darwin'",
 ]
 
 [project.scripts]

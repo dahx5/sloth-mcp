@@ -6,13 +6,16 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import coremltools as ct
 import numpy as np
 from PIL import Image
 
 from choto import userpaths
 from choto.log import get_logger
+
+if TYPE_CHECKING:
+    import coremltools as ct
 
 _log = get_logger(__name__)
 
@@ -164,6 +167,8 @@ def _load() -> IconModel | None:
 
 
 def _read_package(path: Path) -> IconModel:
+    import coremltools as ct
+
     try:
         model = ct.models.MLModel(str(path), compute_units=ct.ComputeUnit.ALL)
         spec = model.get_spec()

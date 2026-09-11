@@ -9,6 +9,7 @@ from typing import Any
 
 from anyio import to_thread
 from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
@@ -65,7 +66,12 @@ from choto.missionsvc import MissionService
 from choto.models import BBox, ElementKind, ExecutionReport, Plan, RunStatus
 from choto.ocr.engine import OcrError, create_ocr_engine, resolve_ocr_factory
 from choto.overlay.backend import OverlayBackend
-from choto.platforms import PlatformBackends, create_overlay_backend, resolve_platform
+from choto.platforms import (
+    PlatformBackends,
+    PlatformError,
+    create_overlay_backend,
+    resolve_platform,
+)
 from choto.recall import DEFAULT_DEPTH, RecallService
 from choto.vision.imaging import screenshot_png
 from choto.vision.windowsource import WindowList, WindowSource
@@ -598,11 +604,15 @@ def _format_validation_error(exc: ValidationError) -> str:
     return "\n".join(lines)
 
 
-async def _in_worker_thread[T](func: Callable[..., T], *args: Any) -> T:
-    return await to_thread.run_sync(func, *args)
+async def _in_worker_thread[T](
+    func: Callable[..., T], context: AppContext | PlatformError, *args: Any
+) -> T:
+    if isinstance(context, PlatformError):
+        raise ToolError(str(context))
+    return await to_thread.run_sync(func, context, *args)
 
 
-def create_mcp(context: AppContext) -> FastMCP:
+def create_mcp(context: AppContext | PlatformError) -> FastMCP:
     mcp = FastMCP("choto")
 
     @mcp.tool(description=OBSERVE_DESCRIPTION, structured_output=False)

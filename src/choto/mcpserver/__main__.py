@@ -35,7 +35,7 @@ from choto.mcpserver.socket_transport import (
     serve_activated_socket,
     serve_socket,
 )
-from choto.platforms import resolve_platform
+from choto.platforms import PlatformError, current_platform, resolve_platform
 
 _PROJECT_ROOT = PROJECT_ROOT
 _ALEMBIC_INI = _PROJECT_ROOT / "alembic.ini"
@@ -634,6 +634,12 @@ def main(argv: list[str] | None = None) -> int:
     _report_missing_models()
 
     if socket_path is None:
+        try:
+            current_platform()
+        except PlatformError as exc:
+            _log.warning("platform.unsupported", error=str(exc), tools="listed, calls refused")
+            create_mcp(exc).run()
+            return _EXIT_OK
         context = build_context()
         try:
             _run_startup_eviction(context)

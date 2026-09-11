@@ -9,6 +9,7 @@ __all__ = [
     "DAEMON_LOG_FILENAME",
     "DB_FILENAME",
     "MODEL_DIR_NAME",
+    "OS_LINUX",
     "OS_MACOS",
     "UnsupportedPlatformError",
     "current_os",
@@ -28,14 +29,19 @@ DAEMON_LOG_FILENAME = "daemon.log"
 DAEMON_ERROR_LOG_FILENAME = "daemon.err.log"
 
 OS_MACOS = "macos"
+OS_LINUX = "linux"
 
 _SYS_PLATFORM_PREFIXES = {
     "darwin": OS_MACOS,
+    "linux": OS_LINUX,
 }
 
 
 MACOS_APPLICATION_SUPPORT = Path("~/Library/Application Support")
 MACOS_LOGS = Path("~/Library/Logs")
+
+_DATA_ROOTS = {OS_MACOS: MACOS_APPLICATION_SUPPORT, OS_LINUX: Path("~/.local/share")}
+_LOG_ROOTS = {OS_MACOS: MACOS_LOGS, OS_LINUX: Path("~/.local/state")}
 
 PROJECT_DB_PATH = Path("data") / DB_FILENAME
 
@@ -54,15 +60,15 @@ def current_os() -> str:
 
 
 def socket_dir() -> Path:
-    return _app_dir_under(MACOS_APPLICATION_SUPPORT)
+    return _app_dir_under(_DATA_ROOTS)
 
 
 def log_dir() -> Path:
-    return _app_dir_under(MACOS_LOGS)
+    return _app_dir_under(_LOG_ROOTS)
 
 
 def model_dir() -> Path:
-    return _app_dir_under(MACOS_APPLICATION_SUPPORT) / MODEL_DIR_NAME
+    return _app_dir_under(_DATA_ROOTS) / MODEL_DIR_NAME
 
 
 def default_db_path() -> Path:
@@ -70,6 +76,5 @@ def default_db_path() -> Path:
     return PROJECT_DB_PATH
 
 
-def _app_dir_under(root: Path) -> Path:
-    current_os()
-    return (root / APP_DIR_NAME).expanduser()
+def _app_dir_under(roots: dict[str, Path]) -> Path:
+    return (roots[current_os()] / APP_DIR_NAME).expanduser()
