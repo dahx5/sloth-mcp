@@ -1,127 +1,81 @@
 # sloth-mcp
 
-**macbook clicking your stuff.**
+**The more it clicks, the better it gets.**
 
-I'm not writing a proper README. It's called sloth for a reason.
+sloth lets Claude use your Mac — native apps and websites in the browser alike. Not by
+looking at the screen before every click, but by remembering what it has already seen.
 
-## The more it clicks, the better it gets.
+![Five calendar events from one plan](media/calendar.gif)
 
-Browser or any other app on your Mac. It remembers every interface it has seen, so each run is faster and needs fewer screenshots than the last.
+Five events in Calendar: 25 clicks and keystrokes, sent by Claude as a single plan. An
+agent that looks before every step would have sent 25 screenshots, about 35,000 tokens
+of pictures. Claude got none — just a text report of what happened at each step.
 
----
+## Looking is expensive. Remembering is cheap.
 
-Fine, a bit more.
+Every window sloth sees, it writes down: what is in it and where each button leads.
+The next time Claude needs that app, it doesn't look. It reads the map — a few hundred
+tokens instead of a 1,400-token screenshot — and plans the whole route from it. On a
+walk through System Settings, 16 of 20 windows were recognised from memory; the text on
+screen had to be read only four times.
 
-An MCP server that gives Claude Desktop eyes and hands on a Mac. No Accessibility
-API, no browser driver, no app plugins — it looks at pixels and clicks like you do,
-so it works with anything that draws on screen.
+So sloth gets better with use in the most literal way: the apps you open most are the
+ones it no longer needs to look at.
 
-The point is not that a model can click. The point is **not paying for a screenshot
-every time it does.**
+Claude sees a screenshot only when reality stops matching the plan — a button that
+isn't there, a dialog nobody expected. Then it gets the picture along with a log of
+everything that happened so far, and carries on from the failure instead of starting
+over.
 
-## What it looks like
+## If it's on the screen, sloth can click it
 
-![Calendar, 25 steps from one plan](media/calendar.gif)
+sloth reads pixels, not the Accessibility API, so the browser is just another app to
+it. Native apps like Calendar, Finder or System Settings; websites in Safari or Chrome;
+Electron apps; a web drawing tool it has never seen before:
 
-Five calendar entries, one call. Claude sent twenty-five steps — press `+`, type,
-Enter, escape, again — and got back one text journey saying what happened at each
-of them. Nothing was looked at in between. Real time, not sped up.
-([full quality](media/calendar.mp4))
+![Excalidraw, thirteen actions from one plan](media/excalidraw.gif)
 
-It has no idea what a calendar is. Here is the same server in a drawing app it has
-never seen, picking tools out of a toolbar and dragging shapes:
+## Try it
 
-![Excalidraw, thirteen steps from one plan](media/excalidraw.gif)
-
-([full quality](media/excalidraw.mp4)) — the caption drawn inside that clip
-overstates it, so: the server looks at the screen constantly, it has to. What it
-does not do is send those frames to the model. Thirteen actions, one screenshot's
-worth of tokens, and that one only if something had gone wrong.
-
-## How it goes
-
-Claude sends a batch of semantic steps — `click "Save"`, `wait until "Export"
-appears`, `read the table` — and the server executes the whole batch on its own:
-finds targets by their visible text, waits for the interface to settle by watching
-pixels instead of sleeping, and comes back only when the plan and reality disagree.
-One escalation carries a screenshot, the journey so far and the screen markup, so
-the next plan starts from the failure instead of from scratch.
-
-It also remembers. Every window it reads becomes a node in a local SQLite graph:
-what is in it, what clicking each thing led to, when it was last seen. Ask it what
-it knows about an app and you get a text map with dates — and you can plan a whole
-route from that map **without looking at the screen at all.**
-
-## The numbers
-
-- A screenshot costs **~1400 tokens**. The same window from the map costs **a few
-  hundred** — 6 to 12 times cheaper, and that is the difference between one look
-  per step and one look per plan.
-- A familiar window is recognised by a perceptual hash of its content, so OCR is
-  skipped entirely. On a live run walking System Settings, **16 of 20 reads came
-  from memory** — recognition ran 4 times instead of 20.
-- Semantic target matching runs as one batch instead of one call per line: on a
-  1200-line screen that is **1 model call instead of 828**, ~11x faster.
-- Waiting is measured, not guessed. A macOS pane transition is two repaints with a
-  dead-still gap of 115–565 ms between them, so "the screen went quiet" is not the
-  same as "the transition finished" — the server tells them apart by *where* the
-  pixels moved, not by how long they stayed still.
-
-## Running it
+You need macOS, [Claude Desktop](https://claude.ai/download) and
+[uv](https://docs.astral.sh/uv/). sloth itself needs no API keys and runs entirely on
+your Mac.
 
 ```bash
+git clone https://github.com/dahx5/sloth-mcp.git
+cd sloth-mcp
 uv sync
 uv run choto service install
-uv run choto service status
 ```
 
-The commands are called `choto` — that was the project's name before it was a sloth,
-and renaming every entry point is a change for its own sake. Same thing.
+(The commands are called `choto` — the project's name before it became a sloth.)
 
-**Optional:** an icon detector. Without one the server reads everything by its
-visible text, which is most of a Mac; with one it also finds the controls that are
-only a glyph — the back arrow, the toolbar buttons, the switches with no label. If
-you have a CoreML `icon_detect.mlpackage`, point the server at it:
-
-```bash
-uv run choto model install --icon-detector /path/to/icon_detect.mlpackage
-```
-
-Then point Claude Desktop at the bridge:
+Then add it to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
-"sloth": {
-  "command": "/opt/homebrew/bin/uv",
-  "args": ["run", "--project", "/path/to/sloth-mcp", "choto-bridge"]
+{
+  "mcpServers": {
+    "sloth": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": ["run", "--project", "/path/to/sloth-mcp", "choto-bridge"]
+    }
+  }
 }
 ```
 
-The bridge is a thin stdio↔socket shim on purpose: Claude Desktop hands its own TCC
-identity to child processes, and that identity cannot be granted Accessibility — so
-the process that actually moves the mouse has to be somebody else. macOS will ask
-for **Screen Recording** and **Accessibility** for the signed `Choto.app` bundle
-that `service install` puts in place.
+Restart Claude Desktop and allow **Screen Recording** and **Accessibility** for
+`Choto.app` when macOS asks.
 
-Kill switch: throw the mouse into the top-left corner, or hit Stop in the overlay
-frame.
+To stop it mid-task, push the mouse into the top-left corner of the screen.
 
-## What it deliberately does not do
+## What it can't do
 
-Accessibility API (universality beats convenience), Windows and Linux, multiple
-displays, autonomous LLM calls from the server, and — for now — a README longer
-than this one.
+- Anything other than macOS, or more than one display.
+- Buttons that are only an icon, out of the box. sloth finds things by their text; for
+  icons it needs an icon detector you supply yourself:
+  `uv run choto model install --icon-detector /path/to/icon_detect.mlpackage`
+  (not included; the weights are AGPL-3.0).
+- Promise you a reply. This was built for my own Mac and shared as is. Issues are
+  welcome.
 
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-One thing that is not: the icon detector. `icon_detect.mlpackage` is not shipped
-here and is not downloaded by anything in this repo — you point `model install` at
-your own copy. The YOLO-derived weights that name refers to are **AGPL-3.0**, so
-whatever you feed it comes with its own terms attached.
-
-## Support
-
-There isn't any. Issues are welcome and may sit unread — this is something I built
-for my own machine and put out because it works, not a product with a roadmap.
-Forks are the faster path to whatever you need.
+MIT License.
