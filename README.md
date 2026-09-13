@@ -4,6 +4,10 @@
 
 I'm not writing a proper README. It's called sloth for a reason.
 
+## The more it clicks, the better it gets.
+
+Browser or any other app on your Mac. It remembers every interface it has seen, so each run is faster and needs fewer screenshots than the last.
+
 ---
 
 Fine, a bit more.
