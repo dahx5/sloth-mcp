@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from choto.config import Settings
-from choto.graph.eviction import UNCONFIRMED_MAX_VISITS, plan_eviction
+from choto.graph.eviction import ROUTE_KINDS, UNCONFIRMED_MAX_VISITS, plan_eviction
 from choto.graph.repository import GraphRepository, ScreenSighting
 from choto.log import get_logger
 from choto.recall import format_when
@@ -43,6 +43,8 @@ class MapStats:
     unconfirmed: int
     evictable_unconfirmed: int
     evictable_capped: int
+    spared: int
+    stray_edges: int
     glyphs: int
     glyphs_labeled: int
     glyph_positions: int
@@ -104,6 +106,8 @@ def collect_stats(repo: GraphRepository, settings: Settings) -> MapStats:
         unconfirmed=sum(stat.unconfirmed for stat in apps),
         evictable_unconfirmed=len(plan.unconfirmed),
         evictable_capped=len(plan.capped),
+        spared=plan.spared,
+        stray_edges=plan.stray_edges,
         glyphs=icons.glyphs_total,
         glyphs_labeled=icons.glyphs_labeled,
         glyph_positions=icons.icon_elements,
@@ -144,12 +148,21 @@ def render_stats(stats: MapStats, settings: Settings, *, now: datetime | None = 
         _journal_history_line(stats, settings, now),
         f"unconfirmed: {stats.unconfirmed} node(s) met at most once — of those, "
         f"{stats.evictable_unconfirmed} have already been outlived by "
-        f"{settings.map_unconfirmed_after_visits} later sighting(s) of their app",
-        f"over the per-window cap of {settings.map_max_nodes_per_window}: "
+        f"{settings.map_unconfirmed_after_visits} later sighting(s) of a window "
+        "with the same app and title",
+        f"over the per-window cap of {settings.map_max_nodes_per_window} "
+        "(spared nodes not counted): "
         f"{stats.evictable_capped} node(s)",
+        f"spared: {stats.spared} node(s) carry an edge from {', '.join(ROUTE_KINDS)} "
+        "— no rule evicts them",
         f"next eviction would remove {stats.evictable_unconfirmed + stats.evictable_capped} "
         f"of {stats.nodes} node(s)"
-        + (f" and trim {stats.evictable_visits} sighting(s)" if stats.evictable_visits else ""),
+        + (f" and trim {stats.evictable_visits} sighting(s)" if stats.evictable_visits else "")
+        + (
+            f", and drop {stats.stray_edges} edge(s) of actions that are not input"
+            if stats.stray_edges
+            else ""
+        ),
         f"glyphs: {stats.glyphs} icon drawing(s), {stats.glyphs_labeled} named, drawn in "
         f"{stats.glyph_positions} place(s) — {stats.evictable_glyphs} nameless and orphaned "
         "(nothing draws them any more; the next eviction sweeps them, named ones never)",

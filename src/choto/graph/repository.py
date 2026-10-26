@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import ColumnElement, delete, func, insert, select, true, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from choto.graph.db_models import (
@@ -67,6 +68,10 @@ if TYPE_CHECKING:
 _log = get_logger(__name__)
 
 _WHITESPACE_RE = re.compile(r"\s+")
+
+_DASH_LOOKALIKES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"
+
+_DASHES = str.maketrans(dict.fromkeys(_DASH_LOOKALIKES, "-"))
 
 
 @dataclass(frozen=True)
@@ -132,6 +137,11 @@ def normalize_text(text: str) -> str:
     return collapsed.casefold()
 
 
+# PR-051
+def title_key(text: str) -> str:
+    return normalize_text(text).translate(_DASHES)
+
+
 def hamming_hex(a: str, b: str) -> int:
     try:
         xor = int(a, 16) ^ int(b, 16)
@@ -165,15 +175,18 @@ def _scroll_extent(
     )
 
 
-def _icon_element(screen_id: int, record: IconRecord, label: str) -> Element:
+def _icon_element(
+    screen_id: int, record: IconRecord, label: str, origin: tuple[int, int] | None
+) -> Element:
+    dx, dy = origin or (0, 0)
     return Element(
         screen_id=screen_id,
         kind=ElementKind.ICON,
         icon_phash=record.phash,
         text=label,
         norm_text=normalize_text(label),
-        x=record.bbox.x,
-        y=record.bbox.y,
+        x=record.bbox.x - dx,
+        y=record.bbox.y - dy,
         w=record.bbox.w,
         h=record.bbox.h,
         ocr_confidence=ICON_ELEMENT_CONFIDENCE,
@@ -205,7 +218,6 @@ def _offscreen_element(screen_id: int, placement: ScrollPlacement) -> Element:
 def _window_query(
     *,
     app_name: str | None,
-    title_query: str | None,
     screen_ids: Sequence[int] | None,
 ) -> Any:
     element_count = (
@@ -237,10 +249,6 @@ def _window_query(
     )
     if app_name is not None:
         stmt = stmt.where(func.lower(Screen.app_name) == app_name.lower())
-    if title_query is not None:
-        stmt = stmt.where(
-            func.lower(Screen.window_title).contains(title_query.lower(), autoescape=True)
-        )
     if screen_ids is not None:
         stmt = stmt.where(Screen.id.in_(list(screen_ids)))
     return stmt.order_by(Screen.last_seen_at.desc(), Screen.id)
@@ -266,9 +274,30 @@ def _window_summary(row: Any) -> WindowSummary:
     )
 
 
-def _label_value(element: Element) -> Label:
-    x = element.x if element.x is not None else element.doc_x
-    y = element.y if element.y is not None else element.doc_y
+# PR-046
+def _origin(window_x: int | None, window_y: int | None) -> tuple[int, int] | None:
+    if window_x is None or window_y is None:
+        return None
+    return int(window_x), int(window_y)
+
+
+# PR-046
+def _placed(element: Element, origin: tuple[int, int] | None) -> Element:
+    if origin is not None and element.x is not None and element.y is not None:
+        element.x += origin[0]
+        element.y += origin[1]
+    return element
+
+
+# PR-037
+def _site_matches(site: str) -> ColumnElement[bool]:
+    return Screen.site.in_((site, "")) if site else true()
+
+
+def _label_value(element: Element, origin: tuple[int, int] | None) -> Label:
+    dx, dy = origin or (0, 0)
+    x = element.x + dx if element.x is not None else element.doc_x
+    y = element.y + dy if element.y is not None else element.doc_y
     return Label(
         text=element.text,
         kind=element.kind,
@@ -283,12 +312,28 @@ def _label_value(element: Element) -> Label:
     )
 
 
+# PR-045
+def edge_step(action: Mapping[str, Any]) -> dict[str, Any]:
+    step = dict(action)
+    target = step.get("target")
+    if isinstance(target, str):
+        spec: dict[str, Any] = {"text": target}
+        for key in ("region", "window"):
+            if key in step:
+                spec[key] = step.pop(key)
+        step["target"] = spec
+    at = step.get("at")
+    if isinstance(at, list) and len(at) == 2:
+        step["at"] = {"x": at[0], "y": at[1]}
+    return step
+
+
 def _transition_value(edge: Edge) -> Transition:
     return Transition(
         transition_id=int(edge.id),
         from_window=int(edge.from_screen),
         to_window=int(edge.to_screen),
-        action=dict(edge.action),
+        action=edge_step(edge.action),
         success_count=int(edge.success_count),
         fail_count=int(edge.fail_count),
     )
@@ -301,9 +346,13 @@ def _forget_scroll_extent(screen: Screen) -> None:
     screen.scroll_ends = []
 
 
-def _nearest_screens(session: Session, app_name: str, phash: str) -> list[tuple[int, Any]]:
+def _nearest_screens(
+    session: Session, app_name: str, phash: str, site: str
+) -> list[tuple[int, Any]]:
     candidates = session.execute(
-        select(Screen.id, Screen.phash, Screen.anchors).where(Screen.app_name == app_name)
+        select(Screen.id, Screen.phash, Screen.anchors).where(
+            Screen.app_name == app_name, _site_matches(site)
+        )
     ).all()
     return sorted(
         ((hamming_hex(phash, candidate.phash), candidate) for candidate in candidates),
@@ -364,16 +413,34 @@ class GraphRepository:
         self._session_factory = session_factory
 
     def upsert_screen(
-        self, state: ScreenState, anchors: list[str], *, glyph_scope: str, window_title: str
+        self,
+        state: ScreenState,
+        anchors: list[str],
+        *,
+        glyph_scope: str,
+        window_title: str,
+        site: str = "",
+        window_origin: tuple[int, int] | None = None,
+        screen_id: int | None = None,
     ) -> Screen:
         now = datetime.now(UTC)
         with self._session_factory() as session:
-            screen = session.scalar(
-                select(Screen).where(Screen.phash == state.phash, Screen.app_name == state.app_name)
-            )
+            if screen_id is not None:
+                screen = session.get(Screen, screen_id)
+                if screen is None:
+                    raise KeyError(f"Screen {screen_id} not found")
+            else:
+                screen = session.scalar(
+                    select(Screen).where(
+                        Screen.phash == state.phash,
+                        Screen.app_name == state.app_name,
+                        Screen.site == site,
+                    )
+                )
             if screen is None:
                 screen = Screen(
                     app_name=state.app_name,
+                    site=site,
                     phash=state.phash,
                     window_title=window_title,
                     anchors=list(anchors),
@@ -381,6 +448,8 @@ class GraphRepository:
                     height=state.height,
                     is_stale=False,
                     glyph_scope=glyph_scope,
+                    window_x=None if window_origin is None else window_origin[0],
+                    window_y=None if window_origin is None else window_origin[1],
                     last_seen_at=now,
                 )
                 session.add(screen)
@@ -388,9 +457,13 @@ class GraphRepository:
                     "screen.created",
                     phash=state.phash,
                     app_name=state.app_name,
+                    site=site,
                     window_title=window_title,
                 )
             else:
+                self._adopt_identity(session, screen, site or screen.site, state.phash)
+                if window_origin is not None:
+                    screen.window_x, screen.window_y = window_origin
                 screen.window_title = window_title
                 screen.anchors = list(anchors)
                 screen.width = state.width
@@ -404,6 +477,31 @@ class GraphRepository:
             session.expunge(screen)
             return screen
 
+    # PR-037, PR-038
+    @staticmethod
+    def _adopt_identity(session: Session, screen: Screen, site: str, phash: str) -> None:
+        if (screen.site, screen.phash) == (site, phash):
+            return
+        holder = session.scalar(
+            select(Screen.id).where(
+                Screen.app_name == screen.app_name,
+                Screen.site == site,
+                Screen.phash == phash,
+                Screen.id != screen.id,
+            )
+        )
+        if holder is not None:
+            _log.info(
+                "screen.identity_kept",
+                screen_id=screen.id,
+                holder_id=holder,
+                site=site,
+                phash=phash,
+            )
+            return
+        screen.site = site
+        screen.phash = phash
+
     # PR-027
     def get_screen(self, screen_id: int) -> Screen | None:
         with self._session_factory() as session:
@@ -415,18 +513,17 @@ class GraphRepository:
         max_hamming: int,
         *,
         app_name: str,
+        site: str = "",
         anchors: Sequence[str] | None = None,
-        navigation: Collection[str] = (),
+        ignored: Collection[str] = (),
     ) -> Screen | None:
         from choto.vision.anchors import anchors_agree, anchors_confirm
 
         with self._session_factory() as session:
-            for distance, candidate in _nearest_screens(session, app_name, phash):
+            for distance, candidate in _nearest_screens(session, app_name, phash, site):
                 # PR-024
                 stored_anchors = [
-                    text
-                    for text in candidate.anchors
-                    if normalize_text(str(text)) not in navigation
+                    text for text in candidate.anchors if normalize_text(str(text)) not in ignored
                 ]
                 # PR-004
                 if anchors is not None and anchors_agree(stored_anchors, anchors):
@@ -455,6 +552,192 @@ class GraphRepository:
                     continue
                 return _detached_screen(session, candidate.id)
             return None
+
+    # PR-036
+    def screens_agreeing(
+        self, *, app_name: str, site: str, anchors: Sequence[str], ignored: Collection[str]
+    ) -> list[int]:
+        from choto.vision.anchors import anchors_agree
+
+        stmt = select(Screen.id, Screen.anchors).where(
+            Screen.app_name == app_name, _site_matches(site) if site else Screen.site == ""
+        )
+        with self._session_factory() as session:
+            rows = session.execute(stmt.order_by(Screen.id)).all()
+        return [
+            int(row.id)
+            for row in rows
+            if anchors_agree(
+                [text for text in row.anchors if normalize_text(str(text)) not in ignored],
+                anchors,
+            )
+        ]
+
+    # PR-036
+    def merge_screens(self, screen_ids: Collection[int]) -> Screen:
+        wanted = sorted(set(screen_ids))
+        if len(wanted) < 2:
+            raise ValueError(f"A merge takes at least two nodes, got {wanted}.")
+        with self._session_factory() as session:
+            rows = list(session.scalars(select(Screen).where(Screen.id.in_(wanted))).all())
+            if len(rows) != len(wanted):
+                missing = sorted(set(wanted) - {row.id for row in rows})
+                raise KeyError(f"Screens {missing} not found")
+            if len({row.app_name for row in rows}) > 1:
+                raise ValueError(f"Screens {wanted} belong to different applications.")
+            sites = {row.site for row in rows if row.site}
+            if len(sites) > 1:
+                raise ValueError(f"Screens {wanted} show different sites: {sorted(sites)}.")
+            elder = min(rows, key=lambda row: (row.created_at, row.id))
+            freshest = max(rows, key=lambda row: (row.last_seen_at, row.id))
+            losers = [row.id for row in rows if row.id != elder.id]
+            self._move_into(session, elder.id, losers, freshest.id)
+            folded = self._fold_edges(session, elder.id)
+            kept = {
+                "site": next(iter(sites), ""),
+                "phash": freshest.phash,
+                "window_title": freshest.window_title,
+                "anchors": list(freshest.anchors),
+                "width": freshest.width,
+                "height": freshest.height,
+                "is_stale": freshest.is_stale,
+                "glyph_scope": freshest.glyph_scope,
+                "window_x": freshest.window_x,
+                "window_y": freshest.window_y,
+                "scroll_covered_top": freshest.scroll_covered_top,
+                "scroll_covered_bottom": freshest.scroll_covered_bottom,
+                "scroll_viewport_h": freshest.scroll_viewport_h,
+                "scroll_ends": list(freshest.scroll_ends),
+                "last_seen_at": freshest.last_seen_at,
+            }
+            session.execute(
+                delete(Screen)
+                .where(Screen.id.in_(losers))
+                .execution_options(synchronize_session=False)
+            )
+            session.expunge_all()
+            session.execute(update(Screen).where(Screen.id == elder.id).values(**kept))
+            session.commit()
+            merged = _detached_screen(session, elder.id)
+        if merged is None:
+            raise KeyError(f"Screen {elder.id} vanished during its merge")
+        _log.info(
+            "screens.merged",
+            survivor=merged.id,
+            absorbed=losers,
+            state_from=freshest.id,
+            edges_folded=folded,
+        )
+        return merged
+
+    @staticmethod
+    def _move_into(session: Session, elder: int, losers: Sequence[int], freshest: int) -> None:
+        session.execute(
+            update(ScreenVisit)
+            .where(ScreenVisit.screen_id.in_(losers))
+            .values(screen_id=elder)
+            .execution_options(synchronize_session=False)
+        )
+        if freshest != elder:
+            session.execute(delete(Element).where(Element.screen_id == elder))
+            session.execute(
+                update(Element)
+                .where(Element.screen_id == freshest)
+                .values(screen_id=elder)
+                .execution_options(synchronize_session=False)
+            )
+        homes = set(
+            session.scalars(
+                select(IconLabelScreen.glyph_id).where(
+                    IconLabelScreen.screen_id.in_([elder, *losers])
+                )
+            ).all()
+        )
+        session.execute(
+            delete(IconLabelScreen).where(IconLabelScreen.screen_id.in_([elder, *losers]))
+        )
+        if homes:
+            session.execute(
+                insert(IconLabelScreen),
+                [{"glyph_id": glyph_id, "screen_id": elder} for glyph_id in sorted(homes)],
+            )
+        for column in (Edge.from_screen, Edge.to_screen):
+            session.execute(
+                update(Edge)
+                .where(column.in_(losers))
+                .values({column.key: elder})
+                .execution_options(synchronize_session=False)
+            )
+
+    # PR-036
+    @staticmethod
+    def _fold_edges(session: Session, screen_id: int) -> int:
+        kept: dict[tuple[int, int, str], Edge] = {}
+        folded = 0
+        for edge in session.scalars(
+            select(Edge)
+            .where((Edge.from_screen == screen_id) | (Edge.to_screen == screen_id))
+            .order_by(Edge.id)
+        ).all():
+            if edge.from_screen == edge.to_screen:
+                session.delete(edge)
+                folded += 1
+                continue
+            key = (
+                edge.from_screen,
+                edge.to_screen,
+                json.dumps(edge_step(edge.action), sort_keys=True, default=str),
+            )
+            twin = kept.get(key)
+            if twin is None:
+                kept[key] = edge
+                continue
+            twin.success_count += edge.success_count
+            twin.fail_count += edge.fail_count
+            session.delete(edge)
+            folded += 1
+        session.flush()
+        return folded
+
+    # PR-036
+    def merge_confirmed_duplicates(self) -> int:
+        from choto.vision.anchors import anchors_agree
+        from choto.vision.navigation import derive_navigation
+
+        with self._session_factory() as session:
+            groups = session.execute(select(Screen.app_name, Screen.site).distinct()).all()
+            titles = dict(session.execute(select(Screen.id, Screen.window_title)).all())
+        absorbed = 0
+        for app_name, site in groups:
+            anchors = self.app_anchor_sets(str(app_name), site=str(site))
+            ignored = derive_navigation(
+                self.app_label_places(str(app_name), site=str(site)), anchors
+            ).ignored
+            own = {
+                screen_id: [text for text in texts if normalize_text(text) not in ignored]
+                for screen_id, texts in anchors.items()
+            }
+            clusters: list[list[int]] = []
+            for screen_id in sorted(own):
+                home = next(
+                    (
+                        cluster
+                        for cluster in clusters
+                        if titles[cluster[0]] == titles[screen_id]
+                        and anchors_agree(own[cluster[0]], own[screen_id])
+                    ),
+                    None,
+                )
+                if home is None:
+                    clusters.append([screen_id])
+                else:
+                    home.append(screen_id)
+            for cluster in clusters:
+                if len(cluster) > 1:
+                    self.merge_screens(cluster)
+                    absorbed += len(cluster) - 1
+        _log.info("screens.duplicates_merged", absorbed=absorbed)
+        return absorbed
 
     def app_summaries(self) -> list[AppSummary]:
         with self._session_factory() as session:
@@ -495,9 +778,13 @@ class GraphRepository:
     ) -> list[WindowSummary]:
         if screen_ids is not None and not screen_ids:
             return []
-        stmt = _window_query(app_name=app_name, title_query=title_query, screen_ids=screen_ids)
+        stmt = _window_query(app_name=app_name, screen_ids=screen_ids)
         with self._session_factory() as session:
             rows = session.execute(stmt).all()
+        if title_query is not None:
+            # PR-051
+            wanted = title_key(title_query)
+            rows = [row for row in rows if wanted in title_key(str(row.window_title))]
         return [_window_summary(row) for row in rows]
 
     def screen_sightings(self) -> list[ScreenSighting]:
@@ -547,12 +834,67 @@ class GraphRepository:
             session.commit()
             _log.info("screen.marked_stale", screen_id=screen_id)
 
+    # PR-058
+    def drop_address_typed(self, browsers: Collection[str]) -> tuple[int, int]:
+        from choto.vision.navigation import NO_BAND, address_typed
+
+        with self._session_factory() as session:
+            screens = session.execute(
+                select(Screen.id, Screen.window_title, Screen.is_stale).where(
+                    Screen.app_name.in_(list(browsers))
+                )
+            ).all()
+            rows = session.execute(
+                select(
+                    Element.screen_id,
+                    Element.text,
+                    Element.x,
+                    Element.y,
+                    Element.w,
+                    Element.h,
+                    Element.ocr_confidence,
+                ).where(
+                    Element.screen_id.in_([int(row.id) for row in screens]),
+                    Element.kind == ElementKind.TEXT,
+                    Element.x.is_not(None),
+                    Element.y.is_not(None),
+                )
+            ).all()
+        lines: dict[int, list[OcrLine]] = {}
+        for screen_id, text, x, y, w, h, confidence in rows:
+            lines.setdefault(int(screen_id), []).append(
+                OcrLine(
+                    text=text,
+                    bbox=BBox(x=int(x), y=int(y), w=max(int(w), 1), h=max(int(h), 1)),
+                    confidence=float(confidence),
+                )
+            )
+        doomed: list[int] = []
+        stale: list[int] = []
+        for screen_id, title, is_stale in screens:
+            if not address_typed(
+                lines.get(int(screen_id), []), 1.0, titled=bool(title), band=NO_BAND
+            ):
+                continue
+            if not title:
+                doomed.append(int(screen_id))
+            elif not is_stale:
+                stale.append(int(screen_id))
+        deleted = self.delete_screens(doomed)
+        for screen_id in stale:
+            self.mark_stale(screen_id)
+        if doomed or stale:
+            _log.info("screens.address_typed_dropped", deleted=deleted, marked_stale=len(stale))
+        return deleted, len(stale)
+
     def replace_elements(self, screen_id: int, lines: list[OcrLine]) -> None:
         fresh = {normalize_text(line.text) for line in lines if line.text.strip()}
         with self._session_factory() as session:
             screen = session.get(Screen, screen_id)
             if screen is None:
                 raise KeyError(f"Screen {screen_id} not found")
+            # PR-046
+            dx, dy = _origin(screen.window_x, screen.window_y) or (0, 0)
             same_position = self._scroll_position_holds(session, screen, fresh)
             # PR-027
             held = self._scroll_roles(session, screen_id) if same_position else {}
@@ -571,8 +913,8 @@ class GraphRepository:
                         kind=ElementKind.TEXT,
                         text=line.text,
                         norm_text=norm_text,
-                        x=line.bbox.x,
-                        y=line.bbox.y,
+                        x=line.bbox.x - dx,
+                        y=line.bbox.y - dy,
                         w=line.bbox.w,
                         h=line.bbox.h,
                         ocr_confidence=line.confidence,
@@ -680,39 +1022,77 @@ class GraphRepository:
             return False
         return all(text in fresh for text in anchored)
 
-    def get_elements(self, screen_id: int, *, include_offscreen: bool = False) -> list[Element]:
+    # PR-046
+    def get_elements(
+        self,
+        screen_id: int,
+        *,
+        include_offscreen: bool = False,
+        origin: tuple[int, int] | None = None,
+    ) -> list[Element]:
         stmt = select(Element).where(Element.screen_id == screen_id)
         if not include_offscreen:
             stmt = stmt.where(Element.offscreen_side.is_(None))
         with self._session_factory() as session:
+            screen = session.get(Screen, screen_id)
+            stored = None if screen is None else _origin(screen.window_x, screen.window_y)
             elements = list(session.scalars(stmt.order_by(Element.id)).all())
             for element in elements:
                 session.expunge(element)
-            return elements
+        shift = None if stored is None else (origin or stored)
+        return [_placed(element, shift) for element in elements]
 
-    # PR-023
-    def app_label_places(self, app_name: str) -> list[LabelPlace]:
+    # PR-023, PR-037, PR-046
+    def app_label_places(
+        self, app_name: str, *, site: str = "", origin: tuple[int, int] | None = None
+    ) -> list[LabelPlace]:
         from choto.vision.navigation import LabelPlace
 
         stmt = (
-            select(Element.screen_id, Element.text, Element.x, Element.y, Element.w, Element.h)
+            select(
+                Element.screen_id,
+                Element.text,
+                Element.x,
+                Element.y,
+                Element.w,
+                Element.h,
+                Screen.window_x,
+                Screen.window_y,
+            )
             .join(Screen, Screen.id == Element.screen_id)
             .where(
                 Screen.app_name == app_name,
+                Screen.site == site,
                 Element.kind == ElementKind.TEXT,
                 Element.x.is_not(None),
                 Element.y.is_not(None),
             )
         )
         with self._session_factory() as session:
-            return [
+            rows = session.execute(stmt).all()
+        places = []
+        for screen_id, text, x, y, w, h, window_x, window_y in rows:
+            stored = _origin(window_x, window_y)
+            dx, dy = (0, 0) if stored is None else (origin or stored)
+            places.append(
                 LabelPlace(
                     screen_id=int(screen_id),
                     text=text,
-                    bbox=BBox(x=int(x), y=int(y), w=int(w), h=int(h)),
+                    bbox=BBox(x=int(x) + dx, y=int(y) + dy, w=int(w), h=int(h)),
                 )
-                for screen_id, text, x, y, w, h in session.execute(stmt).all()
-            ]
+            )
+        return places
+
+    # PR-024, PR-037
+    def app_anchor_sets(self, app_name: str, *, site: str = "") -> dict[int, list[str]]:
+        stmt = select(Screen.id, Screen.anchors).where(
+            Screen.app_name == app_name, Screen.site == site
+        )
+        with self._session_factory() as session:
+            return {
+                int(screen_id): [str(text) for text in anchors]
+                for screen_id, anchors in session.execute(stmt).all()
+            }
 
     def window_labels(
         self, screen_ids: Sequence[int], *, include_offscreen: bool = False
@@ -725,8 +1105,16 @@ class GraphRepository:
             stmt = stmt.where(Element.offscreen_side.is_(None))
         grouped: dict[int, list[Label]] = {}
         with self._session_factory() as session:
+            origins = {
+                int(screen_id): _origin(window_x, window_y)
+                for screen_id, window_x, window_y in session.execute(
+                    select(Screen.id, Screen.window_x, Screen.window_y).where(Screen.id.in_(wanted))
+                ).all()
+            }
             for element in session.scalars(stmt.order_by(Element.screen_id, Element.id)).all():
-                grouped.setdefault(int(element.screen_id), []).append(_label_value(element))
+                grouped.setdefault(int(element.screen_id), []).append(
+                    _label_value(element, origins.get(int(element.screen_id)))
+                )
         return grouped
 
     def save_icon_candidates(
@@ -741,6 +1129,8 @@ class GraphRepository:
                     f"Screen {screen_id} belongs to {screen.app_name!r}, not {app_name!r}: "
                     "an icon glyph is keyed per application and must not cross that line."
                 )
+            # PR-046
+            origin = _origin(screen.window_x, screen.window_y)
 
             session.execute(
                 delete(Element).where(
@@ -782,7 +1172,7 @@ class GraphRepository:
                 label = icon_element_text(glyph.label, at_home=glyph.id in home)
                 if label:
                     named += 1
-                session.add(_icon_element(screen_id, record, label))
+                session.add(_icon_element(screen_id, record, label, origin))
             session.commit()
 
         _log.info(
@@ -852,6 +1242,8 @@ class GraphRepository:
                 Element.y,
                 Element.w,
                 Element.h,
+                Screen.window_x,
+                Screen.window_y,
             )
             .join(Screen, Screen.id == Element.screen_id)
             .where(
@@ -863,12 +1255,13 @@ class GraphRepository:
             .order_by(Element.screen_id, Element.y, Element.x)
         ).all()
         grouped: dict[tuple[str, str], list[GlyphPosition]] = {}
-        for app, phash, screen_id, title, x, y, w, h in rows:
+        for app, phash, screen_id, title, x, y, w, h, window_x, window_y in rows:
+            dx, dy = _origin(window_x, window_y) or (0, 0)
             grouped.setdefault((str(app), str(phash)), []).append(
                 GlyphPosition(
                     screen_id=int(screen_id),
                     window_title=str(title),
-                    bbox=BBox(x=int(x), y=int(y), w=int(w), h=int(h)),
+                    bbox=BBox(x=int(x) + dx, y=int(y) + dy, w=int(w), h=int(h)),
                 )
             )
         return {key: tuple(value) for key, value in grouped.items()}
@@ -997,29 +1390,101 @@ class GraphRepository:
             _log.info("icon_glyphs.deleted", count=deleted)
             return deleted
 
-    def record_edge(self, from_id: int, action: dict, to_id: int, success: bool) -> Edge:
+    # PR-062
+    def reset_tooltip_labels(self, labelled_before: datetime) -> int:
+        with self._session_factory() as session:
+            glyphs = list(
+                session.scalars(
+                    select(IconGlyph).where(
+                        IconGlyph.label_source == IconLabelSource.TOOLTIP,
+                        IconGlyph.label != "",
+                        IconGlyph.updated_at < labelled_before,
+                    )
+                ).all()
+            )
+            for glyph in glyphs:
+                session.execute(
+                    update(Element)
+                    .where(
+                        Element.kind == ElementKind.ICON,
+                        Element.icon_phash == glyph.phash,
+                        Element.screen_id.in_(
+                            select(Screen.id).where(Screen.app_name == glyph.app_name)
+                        ),
+                    )
+                    .values(text="", norm_text="")
+                    .execution_options(synchronize_session=False)
+                )
+                session.execute(delete(IconLabelScreen).where(IconLabelScreen.glyph_id == glyph.id))
+                glyph.label = ""
+                glyph.label_source = IconLabelSource.UNLABELED
+            session.commit()
+        if glyphs:
+            _log.info("icon_glyphs.tooltip_labels_reset", count=len(glyphs))
+        return len(glyphs)
+
+    # PR-042, PR-045
+    def record_edge(
+        self, from_id: int, action: dict[str, Any], to_id: int, success: bool | None
+    ) -> Edge:
+        step = edge_step(action)
         with self._session_factory() as session:
             existing = session.scalars(
                 select(Edge).where(Edge.from_screen == from_id, Edge.to_screen == to_id)
             ).all()
-            edge = next((candidate for candidate in existing if candidate.action == action), None)
+            edge = next(
+                (candidate for candidate in existing if edge_step(candidate.action) == step), None
+            )
             if edge is None:
                 edge = Edge(
                     from_screen=from_id,
                     to_screen=to_id,
-                    action=dict(action),
-                    success_count=1 if success else 0,
-                    fail_count=0 if success else 1,
+                    action=step,
+                    success_count=0,
+                    fail_count=0,
                 )
                 session.add(edge)
-            elif success:
-                edge.success_count += 1
             else:
+                edge.action = step
+            if success is True:
+                edge.success_count += 1
+            elif success is False:
                 edge.fail_count += 1
             session.commit()
             session.refresh(edge)
             session.expunge(edge)
+            _log.info(
+                "edge.recorded",
+                edge_id=edge.id,
+                from_screen=from_id,
+                to_screen=to_id,
+                action=step.get("action"),
+                outcome="unverified" if success is None else ("ok" if success else "failed"),
+            )
             return edge
+
+    # PR-043
+    def refute_edges(self, from_id: int, action: dict[str, Any], to_id: int) -> int:
+        step = edge_step(action)
+        with self._session_factory() as session:
+            stale = [
+                edge
+                for edge in session.scalars(
+                    select(Edge).where(Edge.from_screen == from_id, Edge.to_screen != to_id)
+                ).all()
+                if edge_step(edge.action) == step
+            ]
+            for edge in stale:
+                edge.fail_count += 1
+            session.commit()
+        if stale:
+            _log.info(
+                "edge.refuted",
+                from_screen=from_id,
+                arrived=to_id,
+                edges=[edge.id for edge in stale],
+            )
+        return len(stale)
 
     def transitions(self, *, from_screen: int | None = None) -> list[Transition]:
         stmt = select(Edge).order_by(Edge.id)
@@ -1062,16 +1527,45 @@ class GraphRepository:
             )
             return visit
 
-    def count_visits_since(self, app_name: str, moment: datetime) -> int:
+    def count_visits_since(self, app_name: str, window_title: str, moment: datetime) -> int:
         with self._session_factory() as session:
             return int(
                 session.scalar(
                     select(func.count(ScreenVisit.id)).where(
-                        ScreenVisit.app_name == app_name, ScreenVisit.seen_at > moment
+                        ScreenVisit.app_name == app_name,
+                        ScreenVisit.window_title == window_title,  # PR-033
+                        ScreenVisit.seen_at > moment,
                     )
                 )
                 or 0
             )
+
+    def screens_with_edges_of(self, actions: Collection[str]) -> frozenset[int]:
+        kind = Edge.action["action"].as_string()
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(Edge.from_screen, Edge.to_screen).where(kind.in_(list(actions)))
+            ).all()
+        return frozenset(screen_id for row in rows for screen_id in row)
+
+    # PR-041
+    def count_edges_except(self, actions: Collection[str]) -> int:
+        kind = Edge.action["action"].as_string()
+        with self._session_factory() as session:
+            return int(
+                session.scalar(select(func.count(Edge.id)).where(kind.not_in(list(actions)))) or 0
+            )
+
+    # PR-041
+    def delete_edges_except(self, actions: Collection[str]) -> int:
+        kind = Edge.action["action"].as_string()
+        with self._session_factory() as session:
+            result = session.execute(delete(Edge).where(kind.not_in(list(actions))))
+            session.commit()
+            deleted = int(result.rowcount)
+        if deleted:
+            _log.info("edges.deleted", count=deleted, kept=sorted(actions))
+        return deleted
 
     def journal_spans(self) -> dict[str, JournalSpan]:
         with self._session_factory() as session:

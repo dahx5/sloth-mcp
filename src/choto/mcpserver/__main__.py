@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from choto.config import Settings, get_settings
 from choto.graph import hygiene
 from choto.graph.eviction import evict
+from choto.graph.icons import TOOLTIP_LABELS_TRUSTED_SINCE
 from choto.log import get_logger, setup_logging
 from choto.matching import embeddings
 from choto.mcpserver import appbundle, launchdsocket
@@ -599,6 +600,21 @@ def _activated_descriptor(name: str | None) -> int | None:
 
 
 def _run_startup_eviction(context: AppContext) -> None:
+    # PR-036
+    try:
+        context.repo.merge_confirmed_duplicates()
+    except (SQLAlchemyError, ValueError) as exc:
+        _log.error("map.merge_failed", error=str(exc))
+    # PR-062
+    try:
+        context.repo.reset_tooltip_labels(TOOLTIP_LABELS_TRUSTED_SINCE)
+    except SQLAlchemyError as exc:
+        _log.error("map.tooltip_reset_failed", error=str(exc))
+    # PR-058
+    try:
+        context.repo.drop_address_typed(context.settings.browser_apps)
+    except SQLAlchemyError as exc:
+        _log.error("map.address_typed_drop_failed", error=str(exc))
     try:
         evict(context.repo, context.settings)
     except SQLAlchemyError as exc:

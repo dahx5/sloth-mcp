@@ -4,7 +4,9 @@ import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
+from rapidfuzz import fuzz
 
 from choto.capture.framing import clamp_box, crop_frame
 from choto.capture.grabber import PullGrabber
@@ -46,6 +48,15 @@ TOOLTIP_APPEARED_PIXEL_FRACTION = 0.01
 MIN_TOOLTIP_LABEL_CHARS = 2
 
 _MIN_TOOLTIP_CONFIDENCE = 0.5
+
+# PR-062
+TOOLTIP_BUBBLE_MAX_GAP_PX = 96
+TOOLTIP_BUBBLE_MIN_HEIGHT_PX = 10
+TOOLTIP_SEEN_SIMILARITY = 80
+
+_BUBBLE_INTENSITY_THRESHOLD = 25
+_BUBBLE_CLOSE_PX = (15, 7)
+_BUBBLE_PAD_PX = 4
 
 _CORNER_REASON = "kill-switch: mouse moved to the failsafe corner; the pass stopped there"
 _STOP_BUTTON_REASON = "kill-switch: stop button pressed; the pass stopped there"
@@ -385,17 +396,43 @@ class TooltipProbe:
             monitor.height_px,
         )
 
+    # PR-062
     def _read_tooltip(
         self, baseline: np.ndarray, shown: np.ndarray, region: BBox, icon: BBox
     ) -> str:
-        before = {normalize_text(line.text) for line in self._lines(baseline, region, icon)}
-        added = [
+        earlier = self._lines(baseline, region, icon)
+        seen = [normalize_text(line.text) for line in earlier]
+        placed = [_shifted(line.bbox, region) for line in earlier]
+        found: list[str] = []
+        for bubble in _bubbles(baseline, shown, region, icon):
+            under = [box for box in placed if _overlaps(box, bubble)]
+            if under and self._edited_in_place(baseline, shown, _union(bubble, under)):
+                continue
+            inside = seen + [normalize_text(line.text) for line in self._ocr_box(baseline, bubble)]
+            fresh = [line for line in self._ocr_box(shown, bubble) if not _was_seen(line, inside)]
+            if fresh:
+                fresh.sort(key=lambda line: (line.bbox.y, line.bbox.x))
+                found.append(" ".join(" ".join(line.text.split()) for line in fresh))
+        if len(found) != 1:
+            _log.info(
+                "tooltips.no_confident_bubble",
+                icon=(icon.x, icon.y, icon.w, icon.h),
+                bubbles_with_new_text=len(found),
+            )
+            return ""
+        return found[0].strip()
+
+    def _edited_in_place(self, baseline: np.ndarray, shown: np.ndarray, box: BBox) -> bool:
+        before = normalize_text(" ".join(line.text for line in self._ocr_box(baseline, box)))
+        after = normalize_text(" ".join(line.text for line in self._ocr_box(shown, box)))
+        return bool(before) and fuzz.ratio(before, after) >= TOOLTIP_SEEN_SIMILARITY
+
+    def _ocr_box(self, frame: np.ndarray, box: BBox) -> list[OcrLine]:
+        return [
             line
-            for line in self._lines(shown, region, icon)
-            if normalize_text(line.text) not in before
+            for line in self._ocr.recognize(crop_frame(frame, box))
+            if line.confidence >= _MIN_TOOLTIP_CONFIDENCE
         ]
-        added.sort(key=lambda line: (line.bbox.y, line.bbox.x))
-        return " ".join(" ".join(line.text.split()) for line in added).strip()
 
     def _lines(self, frame: np.ndarray, region: BBox, icon: BBox) -> list[OcrLine]:
         crop = crop_frame(frame, region)
@@ -507,6 +544,83 @@ def _to_points(monitor: MonitorInfo, px: int, py: int) -> tuple[float, float]:
 def _front_window_of(listing: WindowList) -> Window | None:
     windows = listing.app_windows
     return windows[0] if windows else None
+
+
+# PR-062
+def _bubbles(baseline: np.ndarray, shown: np.ndarray, region: BBox, icon: BBox) -> list[BBox]:
+    before = cv2.cvtColor(crop_frame(baseline, region), cv2.COLOR_RGB2GRAY)
+    after = cv2.cvtColor(crop_frame(shown, region), cv2.COLOR_RGB2GRAY)
+    height, width = int(before.shape[0]), int(before.shape[1])
+    hole = clamp_box(
+        BBox(x=icon.x - region.x, y=icon.y - region.y, w=icon.w, h=icon.h), width, height
+    )
+    mask = (cv2.absdiff(before, after) > _BUBBLE_INTENSITY_THRESHOLD).astype(np.uint8)
+    mask[hole.y : hole.y + hole.h, hole.x : hole.x + hole.w] = 0
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, _BUBBLE_CLOSE_PX)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    outlines, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    cx, cy = icon.center
+    ranked: list[tuple[int, BBox]] = []
+    rects = [tuple(int(value) for value in cv2.boundingRect(outline)) for outline in outlines]
+    for x, y, w, h in rects:
+        if any(_within((x, y, w, h), other) for other in rects if other != (x, y, w, h)):
+            continue
+        box = BBox(x=region.x + x, y=region.y + y, w=w, h=h)
+        clipped = x == 0 or y == 0 or x + w == width or y + h == height
+        under_pointer = box.x <= cx < box.x + box.w and box.y <= cy < box.y + box.h
+        gap = _gap(box, icon)
+        if h < TOOLTIP_BUBBLE_MIN_HEIGHT_PX or clipped or under_pointer:
+            continue
+        if gap > TOOLTIP_BUBBLE_MAX_GAP_PX:
+            continue
+        padded = BBox(
+            x=box.x - _BUBBLE_PAD_PX,
+            y=box.y - _BUBBLE_PAD_PX,
+            w=box.w + 2 * _BUBBLE_PAD_PX,
+            h=box.h + 2 * _BUBBLE_PAD_PX,
+        )
+        ranked.append((gap, clamp_box(padded, int(shown.shape[1]), int(shown.shape[0]))))
+    ranked.sort(key=lambda item: item[0])
+    return [box for _, box in ranked]
+
+
+def _within(inner: tuple[int, ...], outer: tuple[int, ...]) -> bool:
+    x, y, w, h = inner
+    ox, oy, ow, oh = outer
+    return ox <= x and oy <= y and x + w <= ox + ow and y + h <= oy + oh
+
+
+def _shifted(box: BBox, region: BBox) -> BBox:
+    return BBox(x=region.x + box.x, y=region.y + box.y, w=box.w, h=box.h)
+
+
+def _overlaps(a: BBox, b: BBox) -> bool:
+    return a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h
+
+
+def _union(box: BBox, others: Sequence[BBox]) -> BBox:
+    boxes = [box, *others]
+    x0 = min(item.x for item in boxes)
+    y0 = min(item.y for item in boxes)
+    x1 = max(item.x + item.w for item in boxes)
+    y1 = max(item.y + item.h for item in boxes)
+    return BBox(x=x0, y=y0, w=x1 - x0, h=y1 - y0)
+
+
+def _gap(box: BBox, icon: BBox) -> int:
+    dx = max(icon.x - (box.x + box.w), box.x - (icon.x + icon.w), 0)
+    dy = max(icon.y - (box.y + box.h), box.y - (icon.y + icon.h), 0)
+    return max(dx, dy)
+
+
+def _was_seen(line: OcrLine, before: Sequence[str]) -> bool:
+    text = normalize_text(line.text)
+    return any(
+        text in earlier or fuzz.ratio(text, earlier) >= TOOLTIP_SEEN_SIMILARITY
+        for earlier in before
+        if earlier
+    )
 
 
 def _refused(reason: str) -> TooltipProbeReport:

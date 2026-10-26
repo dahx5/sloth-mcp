@@ -27,9 +27,9 @@
   },
   {
    "action": "type",
-   "text": "Report ready",
+   "text": "Отчёт готов",
    "expect": {
-    "appears": "Report ready"
+    "appears": "Отчёт готов"
    },
    "timeout_ms": 10000
   },
@@ -58,7 +58,7 @@
   },
   {
    "action": "type",
-   "text": "~/choto-bench-sandbox",
+   "text": "/Users/danilrepinin/choto-bench-sandbox",
    "timeout_ms": 8000
   },
   {

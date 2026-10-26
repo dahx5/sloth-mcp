@@ -4,6 +4,7 @@ import math
 import time
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 import numpy as np
 
@@ -30,13 +31,14 @@ from choto.executor.workarea import (
     WorkArea,
     resolve_work_area,
 )
+from choto.graph.eviction import ROUTE_ACTIONS
 from choto.graph.map_models import ScrollEdge
 from choto.graph.repository import GraphRepository, hamming_hex
 from choto.inputctl.errors import FailsafeTriggeredError, InputControlError
 from choto.inputctl.gestures import in_failsafe_corner
 from choto.inputctl.protocol import InputBackend
 from choto.log import get_logger
-from choto.matching.matcher import MatchResult, TargetMatcher, region_bounds
+from choto.matching.matcher import TIER_EXACT, MatchResult, TargetMatcher, region_bounds
 from choto.models import (
     Action,
     BBox,
@@ -187,6 +189,9 @@ _SERVO_FLAT_COMPONENT = 1e-9
 _SERVO_REDRAW_SETTLE_S = 0.033
 
 _AREA_NOT_RESOLVED = "the run had not resolved a window yet"
+
+# PR-045
+_UNRECORDED_STEP_FIELDS = frozenset({"expect", "timeout_ms", "skip_if_absent"})
 
 
 def _plural(count: int, noun: str) -> str:
@@ -364,7 +369,15 @@ def _surface_note(area: WorkArea, scope: Scope) -> str:
 
 def _matched(match: MatchResult, scope: Scope) -> str:
     surface = f", {scope.value}" if scope is Scope.CHROME else ""
-    return f'"{match.line.text}" ({match.tier} {match.score:.2f}{surface})'
+    # PR-054
+    ties = (
+        f"; {match.ties} equally good candidates, took the top-left one" if match.ties > 1 else ""
+    )
+    return f'"{match.line.text}" ({match.tier} {match.score:.2f}{surface}{ties})'
+
+
+def _is_exact(match: MatchResult | None) -> bool:
+    return match is not None and match.tier == TIER_EXACT and match.score >= 1.0
 
 
 def _point_label(action: Action, modifiers: list[str] | None, point: ScreenPoint) -> str:
@@ -502,6 +515,23 @@ class _Resolution:
     note: str
     surface: str = ""
     moved: bool = False
+
+
+@dataclass(frozen=True)
+class _Sighting:
+    screen_id: int
+    app_name: str
+    lines: tuple[OcrLine, ...]
+
+
+@dataclass(frozen=True)
+class _Claim:
+    screen_id: int
+    text: str
+    buried: bool
+    exact: bool = False
+    # PR-059
+    place: BBox | None = None
 
 
 @dataclass(frozen=True)
@@ -832,7 +862,7 @@ class _Transition:
         else:
             said = f"screen unchanged ({self.change.describe()})"
         if not self.remembered:
-            said += "; not remembered (no window scope)"
+            said += "; not remembered (no window scope, or not a page)"
         return said
 
 
@@ -878,15 +908,17 @@ class Executor:
         self._scroll_pass: ScrollPass | None = None
         # PR-027
         self._pass_screen_id: int | None = None
+        # PR-039
+        self._last_node: _Sighting | None = None
 
-    def execute(self, plan: Plan) -> ExecutionReport:
+    def execute(self, plan: Plan, *, asked_at: float | None = None) -> ExecutionReport:
         self._overlay.begin()
         try:
-            return self._execute(plan)
+            return self._execute(plan, time.monotonic() if asked_at is None else asked_at)
         finally:
             self._overlay.hide()
 
-    def _execute(self, plan: Plan) -> ExecutionReport:
+    def _execute(self, plan: Plan, asked_at: float) -> ExecutionReport:
         run = self._repo.create_run(plan)
         journey: list[str] = []
         completed: list[int] = []
@@ -915,6 +947,10 @@ class Executor:
             for index, step in enumerate(plan.steps, start=1):
                 self._step_index = index
                 self._step_action = step.action.value
+
+                # PR-060
+                if completed and self._reply_due(asked_at):
+                    return self._paused(run.id, completed, index, len(plan.steps), journey)
 
                 reason = self._abort_requested()
                 if reason is not None:
@@ -954,13 +990,62 @@ class Executor:
         _log.info("run.success", run_id=run.id, steps=len(plan.steps))
         return self._report(run.id, RunStatus.SUCCESS, completed, None, None, journey)
 
+    # PR-060
+    def _reply_due(self, asked_at: float) -> bool:
+        return time.monotonic() - asked_at >= self._settings.plan_reply_budget_s
+
+    # PR-060
+    def _paused(
+        self, run_id: int, completed: list[int], index: int, total: int, journey: list[str]
+    ) -> ExecutionReport:
+        budget = self._settings.plan_reply_budget_s
+        reason = (
+            f"stopped by the reply time budget ({budget:g} s, CHOTO_PLAN_REPLY_BUDGET_S) "
+            f"after step {completed[-1]} of {total}; nothing failed — continue from step "
+            f"{index}: send steps {index}..{total} of this plan as a new execute_plan call"
+        )
+        journey.append(f"paused before step {index}: {reason}")
+        _log.info("run.paused", run_id=run_id, resume_step=index, steps=total, budget_s=budget)
+        return self._report(
+            run_id, RunStatus.PAUSED, completed, None, reason, journey, resume=index
+        )
+
     def _read(self, force_ocr: bool = False) -> ReadResult:
         # PR-025, PR-027
         pin = self._pin_to_pass if self._scroll_pass is not None else None
-        result = self._reader.read(self._area, force_ocr=force_ocr, pin=pin)
+        # PR-039
+        shifted = pin is None and self._step_action == Action.SCROLL.value
+        if shifted:
+            pin = self._pin_to_shifted()
+        result = self._reader.read(self._area, force_ocr=force_ocr, pin=pin, pin_keeps_node=shifted)
         self._screen_dirty = False
+        if result.screen_db_id is not None and self._area.scoped:
+            self._last_node = _Sighting(
+                screen_id=result.screen_db_id,
+                app_name=result.state.app_name,
+                lines=tuple(self._area.in_window(result.state.lines)),
+            )
         self._record_seen(result)
         return result
+
+    # PR-039
+    def _pin_to_shifted(self) -> Callable[[Sequence[OcrLine]], int | None] | None:
+        last, area = self._last_node, self._area
+        if last is None or not area.scoped or area.window.h <= 0:
+            return None
+        if area.app_name and area.app_name != last.app_name:
+            return None
+        viewport = area.window
+
+        def pin(lines: Sequence[OcrLine]) -> int | None:
+            walked = ScrollPass(viewport)
+            walked.page(list(last.lines))
+            if not walked.page(list(lines)):
+                return None
+            _log.info("window.shifted_view", screen_id=last.screen_id, offset=walked.offset)
+            return last.screen_id
+
+        return pin
 
     # PR-027
     def _pin_to_pass(self, lines: Sequence[OcrLine]) -> int | None:
@@ -1649,13 +1734,18 @@ class Executor:
             )
         return None
 
-    def _resolve_target(self, target: Target, read: ReadResult, area: WorkArea) -> _Resolution:
+    def _resolve_target(
+        self, target: Target, read: ReadResult, area: WorkArea, *, exact: bool = False
+    ) -> _Resolution:
         candidates = area.select(read.state.lines, target.scope)
         match, region_note = self._match_here(target, candidates, read, area)
         if read.from_cache and (match is None or self._cache_drifted(read)):
             read = self._read(force_ocr=True)
             candidates = area.select(read.state.lines, target.scope)
             match, region_note = self._match_here(target, candidates, read, area)
+        # PR-053
+        if exact and not _is_exact(match):
+            match = None
         if match is not None:
             _log.info(
                 "target.resolved",
@@ -1724,13 +1814,126 @@ class Executor:
     def _locate(
         self, target: Target, read: ReadResult, area: WorkArea
     ) -> tuple[_Resolution, str | None]:
+        claim = self._stored_claim(target, read)
         resolution = self._resolve_target(target, read, area)
-        if resolution.match is not None or not target.scroll_to_find:
+        # PR-053
+        if (
+            target.scroll_to_find
+            and resolution.match is not None
+            and not _is_exact(resolution.match)
+            and claim is not None
+            and claim.buried
+            and claim.exact
+        ):
+            return self._dig_for_exact(target, resolution, area, claim)
+        if resolution.match is not None:
             return resolution, None
-        return self._scroll_search(target, resolution, area)
+        if not target.scroll_to_find:
+            return self._refuted_claim(resolution, claim, scrolled=False), None
+        # PR-059
+        unseen = (
+            None
+            if claim is None or claim.place is None
+            else self._claim_unseen(claim, resolution.read)
+        )
+        if unseen is not None:
+            _log.info("target.scroll_skipped", target=target.text, screen_id=claim.screen_id)
+            return self._refuted_claim(resolution, claim, scrolled=False), None
+        found, aborted = self._scroll_search(target, resolution, area)
+        if found.match is None and aborted is None:
+            found = self._refuted_claim(found, claim, scrolled=found.moved)
+        return found, aborted
+
+    # PR-044, PR-053
+    def _stored_claim(self, target: Target, read: ReadResult) -> _Claim | None:
+        screen_id = read.screen_db_id
+        if screen_id is None or target.scope is not Scope.WINDOW:
+            return None
+        labels = [
+            label
+            for label in self._repo.window_labels([screen_id], include_offscreen=True).get(
+                screen_id, ()
+            )
+            if label.targetable
+        ]
+        plain = target if target.region is None else target.model_copy(update={"region": None})
+        width, height = read.state.width, read.state.height
+        buried = [label.line for label in labels if label.offscreen is not None]
+        exact_below = self._matcher.resolve(plain, buried, width, height) if buried else None
+        if _is_exact(exact_below):
+            return _Claim(screen_id=screen_id, text=exact_below.line.text, buried=True, exact=True)
+        held = self._matcher.resolve(plain, [label.line for label in labels], width, height)
+        if held is None or held.tier != TIER_EXACT:
+            return None
+        offscreen = any(
+            label.offscreen is not None and label.text == held.line.text for label in labels
+        )
+        return _Claim(
+            screen_id=screen_id,
+            text=held.line.text,
+            buried=offscreen,
+            place=None if offscreen else held.line.bbox,
+        )
+
+    # PR-053
+    def _dig_for_exact(
+        self, target: Target, near: _Resolution, area: WorkArea, claim: _Claim
+    ) -> tuple[_Resolution, str | None]:
+        _log.info(
+            "target.exact_below_fold",
+            target=target.text,
+            on_screen=near.match.line.text if near.match is not None else None,
+            remembered=claim.text,
+        )
+        dug, aborted = self._scroll_search(target, near, area, exact=True)
+        if aborted is not None or dug.match is not None:
+            return _noted(
+                dug, f'skipped the near match on screen for the exact "{claim.text}" below it'
+            ), aborted
+        fallback = self._resolve_target(target, dug.read, area)
+        return self._refuted_claim(fallback, claim, scrolled=dug.moved), None
+
+    # PR-059
+    def _claim_unseen(self, claim: _Claim, read: ReadResult) -> str | None:
+        area = self._area
+        if not area.scoped:
+            return "the window could not be told apart on screen"
+        if claim.place is None:
+            if area.covered.any:
+                return f"{area.covered.named} is drawn over the window it would scroll into"
+            return None
+        cx, cy = claim.place.center
+        if not _inside_box(area.window, cx, cy):
+            return f"its place ({cx},{cy}) is outside the window as it stands now"
+        if area.covered.hides(cx, cy):
+            return f"its place ({cx},{cy}) is under {area.covered.named}"
+        if cy < read.page_top:
+            return f"its place ({cx},{cy}) is in the browser's own band (tabs, address bar)"
+        return None
+
+    # PR-044, PR-059
+    def _refuted_claim(
+        self, resolution: _Resolution, claim: _Claim | None, *, scrolled: bool
+    ) -> _Resolution:
+        if claim is None or (claim.buried and not scrolled):
+            return resolution
+        unseen = self._claim_unseen(claim, resolution.read)
+        if unseen is not None:
+            _log.info("target.claim_unseen", screen_id=claim.screen_id, why=unseen)
+            return _noted(
+                resolution,
+                f'window #{claim.screen_id} is remembered with "{claim.text}" in it, but '
+                f"{unseen}, so not seeing it there says nothing and the memory is kept",
+            )
+        self._repo.mark_stale(claim.screen_id)
+        return _noted(
+            resolution,
+            f'window #{claim.screen_id} is remembered with "{claim.text}" in it, but neither '
+            "the screen nor scrolling showed it, so its memory is marked STALE",
+        )
 
     def _scroll_search(
-        self, target: Target, missed: _Resolution, area: WorkArea
+        self, target: Target, missed: _Resolution, area: WorkArea, *, exact: bool = False
     ) -> tuple[_Resolution, str | None]:
         # PR-030
         anchor, refused = self._scroll_anchor(target.region, missed.read, area)
@@ -1739,7 +1942,7 @@ class Executor:
         # PR-025
         ends: set[ScrollEdge] = set()
         self._open_scroll_pass(target.region, missed.read, area)
-        resolution, aborted = self._sweep_both_ways(target, missed, area, anchor, ends)
+        resolution, aborted = self._sweep_both_ways(target, missed, area, anchor, ends, exact)
         self._close_scroll_pass(ends)
         return resolution, aborted
 
@@ -1750,6 +1953,7 @@ class Executor:
         area: WorkArea,
         anchor: tuple[int, int],
         ends: set[ScrollEdge],
+        exact: bool = False,
     ) -> tuple[_Resolution, str | None]:
         self._screen_dirty = True
         resolution = missed
@@ -1759,7 +1963,7 @@ class Executor:
         # PR-031
         stirred = False
         for direction, name in ((1, "down"), (-1, "up")):
-            sweep = self._sweep(target, area, anchor, direction, resolution.read, stirred)
+            sweep = self._sweep(target, area, anchor, direction, resolution.read, stirred, exact)
             stirred = stirred or sweep.moved > 0
             if sweep.resolution is not None:
                 resolution = sweep.resolution
@@ -1786,11 +1990,13 @@ class Executor:
             if note is not None:
                 break
             if moves:
-                resolution = self._resolve_target(target, self._read(force_ocr=True), area)
+                resolution = self._resolve_target(
+                    target, self._read(force_ocr=True), area, exact=exact
+                )
                 at_rest = True
 
         if moves and not at_rest:
-            resolution = self._resolve_target(target, self._read(force_ocr=True), area)
+            resolution = self._resolve_target(target, self._read(force_ocr=True), area, exact=exact)
         return _searched(resolution, moves, notes), None
 
     def _sweep(
@@ -1801,6 +2007,7 @@ class Executor:
         direction: int,
         read: ReadResult,
         stirred: bool = False,
+        exact: bool = False,
     ) -> _Sweep:
         sweep = _Sweep(read=read)
         while sweep.steps < MAX_SCROLL_SEARCH_STEPS:
@@ -1834,7 +2041,7 @@ class Executor:
                 sweep.stopped = f"reached the {'bottom' if direction > 0 else 'top'} of the content"
                 return sweep
             sweep.moved += 1
-            sweep.resolution = self._resolve_target(target, fresh, area)
+            sweep.resolution = self._resolve_target(target, fresh, area, exact=exact)
             if sweep.found:
                 return sweep
         return sweep
@@ -2614,11 +2821,25 @@ class Executor:
             before.screen_db_id, after.screen_db_id, self._screen_changed(before, after)
         )
         transition = f"{settled.describe()}; {crossed.describe()}"
-        if crossed.new_node:
-            # PR-021
-            self._repo.record_edge(
-                crossed.from_id, self._action_payload(step), crossed.to_id, verified.ok
-            )
+        # PR-041
+        if crossed.remembered and step.action in ROUTE_ACTIONS:
+            payload = self._action_payload(step)
+            if crossed.new_node:
+                # PR-021, PR-042
+                self._repo.record_edge(
+                    crossed.from_id,
+                    payload,
+                    crossed.to_id,
+                    verified.ok if expect is not None else None,
+                )
+            # PR-043
+            refuted = self._repo.refute_edges(crossed.from_id, payload, crossed.to_id)
+            if refuted:
+                transition += (
+                    f"; {_plural(refuted, 'remembered transition')} for this action from "
+                    f"#{crossed.from_id} led elsewhere and now count{'s' if refuted == 1 else ''} "
+                    "one more failure"
+                )
 
         if expect is None:
             line = f"step {index} {note} -> {transition}"
@@ -2756,33 +2977,13 @@ class Executor:
         scale = self._pixel_scale()
         return (px / scale, py / scale)
 
+    # PR-045
     @staticmethod
-    def _action_payload(step: Step) -> dict:
-        payload: dict = {"action": step.action.value}
-        if step.at is not None:
-            payload["at"] = [step.at.x, step.at.y]
-        if step.target is not None:
-            payload["target"] = step.target.text
-            if step.target.region is not None:
-                payload["region"] = step.target.region.value
-            if step.target.window is not None:
-                payload["window"] = step.target.window
-        if step.text is not None:
-            payload["text"] = step.text
-        if step.keys is not None:
-            payload["keys"] = list(step.keys)
-        if step.amount is not None:
-            payload["amount"] = step.amount
-        if step.app_name is not None:
-            payload["app_name"] = step.app_name
-        if step.path is not None:
-            payload["path"] = [
-                point.model_dump(mode="json", exclude_none=True) for point in step.path
-            ]
-        if step.modifiers is not None:
-            payload["modifiers"] = list(step.modifiers)
-        if step.until_readout is not None:
-            payload["until_readout"] = step.until_readout.value
+    def _action_payload(step: Step) -> dict[str, Any]:
+        payload = step.model_dump(
+            mode="json", exclude_defaults=True, exclude=_UNRECORDED_STEP_FIELDS
+        )
+        payload["action"] = step.action.value
         return payload
 
     def _target_not_found(
@@ -2899,12 +3100,14 @@ class Executor:
         *,
         frame: np.ndarray | None = None,
         elements: list[str] | None = None,
+        resume: int | None = None,
     ) -> ExecutionReport:
         final = self._finish(run_id, status, journey)
         return ExecutionReport(
             status=status,
             completed_steps=completed,
             failed_step=failed_step,
+            resume_step=resume,
             reason=reason,
             journey=final,
             screenshot_png=(

@@ -38,6 +38,7 @@ class MatchResult:
     score: float
     tier: str
     opposed: OppositePoles | None = None
+    ties: int = 1
 
 
 def _ceil_div(numerator: int, denominator: int) -> int:
@@ -99,6 +100,13 @@ def _divergent_texts(target_tokens: list[str], line_tokens: list[str]) -> tuple[
 def _sort_key(scored: tuple[OcrLine, float, int]) -> tuple[float, int, int, int]:
     line, score, extra = scored
     return (-score, extra, line.bbox.y, line.bbox.x)
+
+
+# PR-054
+def _best(scored: list[tuple[OcrLine, float, int]], tier: str) -> MatchResult:
+    line, score, extra = min(scored, key=_sort_key)
+    ties = sum(1 for _, other, more in scored if other == score and more == extra)
+    return MatchResult(line=line, score=score, tier=tier, ties=ties)
 
 
 class TargetMatcher:
@@ -302,8 +310,7 @@ class TargetMatcher:
                 scored.append((line, _CONTAINMENT_SCORE, len(norm_line) - len(norm_target)))
         if not scored:
             return None
-        line, score, _ = min(scored, key=_sort_key)
-        return MatchResult(line=line, score=score, tier=TIER_EXACT)
+        return _best(scored, TIER_EXACT)
 
     def _match_fuzzy(self, norm_target: str, candidates: list[OcrLine]) -> MatchResult | None:
         threshold = self._settings.fuzzy_match_threshold
@@ -317,8 +324,7 @@ class TargetMatcher:
                 scored.append((line, raw / 100.0, 0))
         if not scored:
             return None
-        line, score, _ = min(scored, key=_sort_key)
-        return MatchResult(line=line, score=score, tier=TIER_FUZZY)
+        return _best(scored, TIER_FUZZY)
 
     def _match_semantic(self, target_text: str, candidates: list[OcrLine]) -> MatchResult | None:
         scores = self._semantic_scores(target_text, candidates)
@@ -330,8 +336,7 @@ class TargetMatcher:
         ]
         if not scored:
             return None
-        line, score, _ = min(scored, key=_sort_key)
-        return MatchResult(line=line, score=score, tier=TIER_SEMANTIC)
+        return _best(scored, TIER_SEMANTIC)
 
     @staticmethod
     def _filter_region(

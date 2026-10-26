@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 from collections import deque
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
+from choto.graph.eviction import ROUTE_KINDS
 from choto.graph.map_models import (
     Label,
     OffscreenHint,
@@ -13,9 +17,11 @@ from choto.graph.map_models import (
     Transition,
     WindowSummary,
 )
-from choto.graph.repository import GraphRepository
+from choto.graph.repository import GraphRepository, normalize_text
 from choto.log import get_logger
-from choto.models import BBox, ElementKind, OcrLine, Target
+from choto.models import Action, BBox, ElementKind, OcrLine, Step, Target
+from choto.vision.anchors import select_anchors
+from choto.vision.navigation import LabelPlace, Navigation, derive_navigation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, see the module docstring
     from choto.matching.matcher import MatchResult, TargetMatcher
@@ -24,23 +30,88 @@ _log = get_logger(__name__)
 
 DEFAULT_FIND_LIMIT = 5
 
+_CLICKS = frozenset({Action.CLICK.value, Action.DOUBLE_CLICK.value, Action.RIGHT_CLICK.value})
+
+# PR-049
+_ANCHOR_CANDIDATES = 8
+
+# PR-049
+_MAX_ANCHOR_CHARS = 40
+
+# PR-049
+_MIN_ANCHOR_LETTERS = 3
+
+# PR-052
+_MIN_NAV_NAME_CHARS = 3
+
+
+def _target_text(target: Any) -> str | None:
+    if isinstance(target, dict):
+        target = target.get("text")
+    if isinstance(target, str) and target.strip():
+        return target
+    return None
+
 
 def action_target_texts(action: dict[str, Any]) -> tuple[str, ...]:
     texts: list[str] = []
-    target = action.get("target")
-    if isinstance(target, str) and target.strip():
-        texts.append(target)
+    text = _target_text(action.get("target"))
+    if text is not None:
+        texts.append(text)
     path = action.get("path")
     if isinstance(path, Sequence) and not isinstance(path, str | bytes):
         for point in path:
             if not isinstance(point, dict):
                 continue
             waypoint = point.get("target")
-            if isinstance(waypoint, dict):
-                text = waypoint.get("text")
-                if isinstance(text, str) and text.strip():
-                    texts.append(text)
+            waypoint_text = _target_text(waypoint)
+            if waypoint_text is not None:
+                texts.append(waypoint_text)
     return tuple(texts)
+
+
+# PR-023, PR-052
+@dataclass(frozen=True)
+class AppNavigation:
+    navigation: Navigation = field(default_factory=Navigation)
+    names: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.navigation)
+
+    def holds(self, line: OcrLine) -> bool:
+        if not self.navigation:
+            return False
+        if self.navigation.holds(line):
+            return True
+        cx, cy = line.bbox.center
+        return any(
+            area.x <= cx < area.x + area.w and area.y <= cy < area.y + area.h
+            for area in self.navigation.areas
+        )
+
+
+def app_navigation(labels: Mapping[int, Sequence[Label]]) -> AppNavigation:
+    on_screen = [
+        (screen_id, label)
+        for screen_id, rows in labels.items()
+        for label in rows
+        if label.kind is ElementKind.TEXT and label.offscreen is None
+    ]
+    navigation = derive_navigation(
+        [LabelPlace(screen_id=sid, text=label.text, bbox=label.bbox) for sid, label in on_screen]
+    )
+    if not navigation:
+        return AppNavigation(navigation=navigation)
+    spelled: dict[str, str] = {}
+    for _sid, label in on_screen:
+        spelled.setdefault(normalize_text(label.text), label.text.strip())
+    slots = sorted(navigation.slots, key=lambda slot: (slot.bbox.y, slot.bbox.x))
+    names = (spelled.get(slot.text, slot.text) for slot in slots)
+    return AppNavigation(
+        navigation=navigation,
+        names=tuple(dict.fromkeys(name for name in names if len(name) >= _MIN_NAV_NAME_CHARS)),
+    )
 
 
 @dataclass(frozen=True)
@@ -50,12 +121,18 @@ class RouteStep:
     target: WindowSummary
     success_count: int
     fail_count: int
+    # PR-049
+    step: dict[str, Any] = field(default_factory=dict)
+    # PR-047
+    via_navigation: bool = False
 
 
 @dataclass(frozen=True)
 class Route:
     steps: tuple[RouteStep, ...]
     alternatives: int
+    # PR-048
+    instead_of: WindowSummary | None = None
 
     @property
     def hops(self) -> int:
@@ -101,6 +178,7 @@ class FindWhere(str, Enum):
     ELEMENT = "element"
     ICON = "icon"
     TITLE = "window title"
+    NAVIGATION = "app navigation"
 
 
 @dataclass(frozen=True)
@@ -110,8 +188,10 @@ class FindHit:
     text: str
     score: float
     tier: str
-    route: Route | NoRoute
+    route: Route | NoRoute | None
     offscreen: OffscreenHint | None = None
+    # PR-050
+    windows: int = 1
 
 
 @dataclass(frozen=True)
@@ -122,6 +202,17 @@ class _ScoredHit:
     score: float
     tier: str
     offscreen: OffscreenHint | None
+    windows: int = 1
+
+
+@dataclass(frozen=True)
+class _Ground:
+    windows: dict[int, WindowSummary]
+    recorded: tuple[Transition, ...]
+    moves: tuple[Transition, ...]
+    labels: dict[int, list[Label]]
+    navigation: dict[str, AppNavigation]
+    virtual: frozenset[tuple[int, int]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -213,15 +304,82 @@ class InterfaceIndex:
 
     def route(self, to_screen: int, from_screen: int) -> Route | NoRoute:
         windows = {item.screen_id: item for item in self._repo.window_summaries()}
-        return self._route(to_screen, from_screen, windows, self._repo.transitions())
+        return self._route(to_screen, from_screen, self._ground(windows))
 
-    def _route(
+    def navigation(self, app_name: str) -> AppNavigation:
+        windows = self._repo.window_summaries(app_name=app_name)
+        return app_navigation(self._repo.window_labels([item.screen_id for item in windows]))
+
+    def _ground(self, windows: dict[int, WindowSummary]) -> _Ground:
+        recorded = tuple(
+            move
+            for move in self._repo.transitions()
+            if move.from_window in windows and move.to_window in windows
+        )
+        usable = [move for move in recorded if _routable(move)]
+        labels = self._repo.window_labels(list(windows))
+        grouped: dict[str, dict[int, list[Label]]] = {}
+        for screen_id, window in windows.items():
+            grouped.setdefault(window.app_name, {})[screen_id] = labels.get(screen_id, [])
+        navigation = {app: app_navigation(members) for app, members in grouped.items()}
+        extra = self._navigation_moves(usable, recorded, windows, labels, navigation)
+        return _Ground(
+            windows=windows,
+            recorded=recorded,
+            moves=(*usable, *extra),
+            labels=labels,
+            navigation=navigation,
+            virtual=frozenset((move.transition_id, move.from_window) for move in extra),
+        )
+
+    # PR-047
+    def _navigation_moves(
         self,
-        to_screen: int,
-        from_screen: int,
+        usable: Sequence[Transition],
+        recorded: Sequence[Transition],
         windows: dict[int, WindowSummary],
-        moves: Sequence[Transition],
-    ) -> Route | NoRoute:
+        labels: Mapping[int, Sequence[Label]],
+        navigation: Mapping[str, AppNavigation],
+    ) -> list[Transition]:
+        # PR-043
+        tried = {(move.from_window, _action_key(move.action)) for move in recorded}
+        extra: list[Transition] = []
+        for move in usable:
+            origin = windows[move.from_window]
+            nav = navigation.get(origin.app_name)
+            target = _click_target(move.action)
+            if not nav or target is None or windows[move.to_window].app_name != origin.app_name:
+                continue
+            if not self._through_navigation(target, origin, labels, nav):
+                continue
+            for screen_id, window in windows.items():
+                if screen_id in (move.from_window, move.to_window):
+                    continue
+                if window.app_name != origin.app_name:
+                    continue
+                if (screen_id, _action_key(move.action)) in tried:
+                    continue
+                if self._through_navigation(target, window, labels, nav):
+                    extra.append(replace(move, from_window=screen_id))
+        return extra
+
+    # PR-029
+    def _through_navigation(
+        self,
+        target: Target,
+        window: WindowSummary,
+        labels: Mapping[int, Sequence[Label]],
+        nav: AppNavigation,
+    ) -> bool:
+        rows = [label.line for label in labels.get(window.screen_id, ()) if label.targetable]
+        content = [line for line in rows if not nav.holds(line)]
+        held = [line for line in rows if nav.holds(line)]
+        if not held or self._matcher.resolve(target, content, window.width, window.height):
+            return False
+        return self._matcher.resolve(target, held, window.width, window.height) is not None
+
+    def _route(self, to_screen: int, from_screen: int, ground: _Ground) -> Route | NoRoute:
+        windows = ground.windows
         if from_screen not in windows:
             return NoRoute(NoRouteReason.ORIGIN_UNKNOWN)
         if to_screen not in windows:
@@ -229,16 +387,53 @@ class InterfaceIndex:
         if from_screen == to_screen:
             return NoRoute(NoRouteReason.ALREADY_THERE)
 
-        linked = [
-            move for move in moves if move.from_window in windows and move.to_window in windows
-        ]
-        spread = _spread(from_screen, linked)
-        if not spread.reaches(to_screen):
-            return _no_route(to_screen, windows, linked, spread)
+        spread = _spread(from_screen, ground.moves)
+        if spread.reaches(to_screen):
+            return self._walk(spread, to_screen, ground)
+        missing = _no_route(to_screen, windows, ground.recorded, spread)
+        # PR-048
+        start = _nearest_start(to_screen, from_screen, ground)
+        if start is None:
+            return missing
+        found = self._walk(_spread(start, ground.moves), to_screen, ground)
+        return replace(found, instead_of=windows[from_screen])
+
+    def _walk(self, spread: _Spread, to_screen: int, ground: _Ground) -> Route:
         return Route(
-            steps=tuple(_route_step(move, windows) for move in spread.best_path(to_screen)),
+            steps=tuple(self._route_step(move, ground) for move in spread.best_path(to_screen)),
             alternatives=spread.alternatives(to_screen),
         )
+
+    def _route_step(self, move: Transition, ground: _Ground) -> RouteStep:
+        return RouteStep(
+            origin=ground.windows[move.from_window],
+            action=dict(move.action),
+            target=ground.windows[move.to_window],
+            success_count=move.success_count,
+            fail_count=move.fail_count,
+            step={**move.action, "expect": self._arrival(move, ground)},
+            via_navigation=(move.transition_id, move.from_window) in ground.virtual,
+        )
+
+    # PR-049
+    def _arrival(self, move: Transition, ground: _Ground) -> dict[str, Any]:
+        origin = ground.windows[move.from_window]
+        nav = ground.navigation.get(ground.windows[move.to_window].app_name, AppNavigation())
+        own = [
+            label.line
+            for label in ground.labels.get(move.to_window, ())
+            if label.targetable and label.kind is ElementKind.TEXT and not nav.holds(label.line)
+        ]
+        before = [
+            label.line for label in ground.labels.get(move.from_window, ()) if label.targetable
+        ]
+        for text in select_anchors(own, n=_ANCHOR_CANDIDATES):
+            if len(text) > _MAX_ANCHOR_CHARS or not _wordy(text):
+                continue
+            if self._matcher.resolve(Target(text=text), before, origin.width, origin.height):
+                continue
+            return {"appears": text}
+        return {"screen_changes": True}
 
     def last_seen(self, app_name: str) -> WindowSummary | None:
         windows = self._repo.window_summaries(app_name=app_name)
@@ -262,26 +457,32 @@ class InterfaceIndex:
             [item.screen_id for item in windows], include_offscreen=True
         )
         target = Target(text=text)
+        by_id = {
+            item.screen_id: item
+            for item in (windows if app_name is None else self._repo.window_summaries())
+        }
+        ground = self._ground(by_id)
 
         scored: list[_ScoredHit] = []
         searched = 0
         for window in windows:
             usable = [label for label in labels.get(window.screen_id, ()) if label.targetable]
             searched += len(usable)
-            best = self._best_hit(target, window, usable)
+            nav = ground.navigation.get(window.app_name, AppNavigation())
+            best = self._best_hit(target, window, usable, nav)
             if best is not None:
                 scored.append(best)
 
-        scored.sort(
-            key=lambda row: (-row.score, -row.window.last_seen_at.timestamp(), row.window.screen_id)
+        ranked = sorted(
+            _one_per_navigation(scored),
+            key=lambda row: (
+                row.where is FindWhere.NAVIGATION,
+                -row.score,
+                -row.window.last_seen_at.timestamp(),
+                row.window.screen_id,
+            ),
         )
-        kept = scored[:limit]
-
-        moves = self._repo.transitions()
-        by_id = {
-            item.screen_id: item
-            for item in (windows if app_name is None else self._repo.window_summaries())
-        }
+        kept = ranked[:limit]
 
         hits = tuple(
             FindHit(
@@ -290,8 +491,11 @@ class InterfaceIndex:
                 text=row.text,
                 score=row.score,
                 tier=row.tier,
-                route=self._route_to(row.window, origin, by_id, moves),
+                route=None
+                if row.where is FindWhere.NAVIGATION
+                else self._route_to(row.window, origin, ground),
                 offscreen=row.offscreen,
+                windows=row.windows,
             )
             for row in kept
         )
@@ -301,7 +505,7 @@ class InterfaceIndex:
             apps_searched=len({item.app_name for item in windows}),
             windows_searched=len(windows),
             elements_searched=searched,
-            truncated=max(len(scored) - len(kept), 0),
+            truncated=max(len(ranked) - len(kept), 0),
         )
         _log.info(
             "index.find",
@@ -313,13 +517,45 @@ class InterfaceIndex:
         )
         return report
 
+    # PR-050
     def _best_hit(
-        self, target: Target, window: WindowSummary, labels: Sequence[Label]
+        self, target: Target, window: WindowSummary, labels: Sequence[Label], nav: AppNavigation
     ) -> _ScoredHit | None:
-        candidates: list[_ScoredHit] = []
         lines = [label.line for label in labels]
         by_line = {id(line): label for line, label in zip(lines, labels, strict=True)}
-        hit = self._matcher.resolve(target, lines, window.width, window.height)
+        held = {
+            id(line)
+            for line, label in zip(lines, labels, strict=True)
+            if label.offscreen is None and nav.holds(line)
+        }
+        own = self._own_hit(
+            target, window, [line for line in lines if id(line) not in held], by_line
+        )
+        if own is not None:
+            return own
+        hit = self._matcher.resolve(
+            target, [line for line in lines if id(line) in held], window.width, window.height
+        )
+        if hit is None:
+            return None
+        return _ScoredHit(
+            window=window,
+            where=FindWhere.NAVIGATION,
+            text=by_line[id(hit.line)].text.strip(),
+            score=hit.score,
+            tier=hit.tier,
+            offscreen=None,
+        )
+
+    def _own_hit(
+        self,
+        target: Target,
+        window: WindowSummary,
+        lines: list[OcrLine],
+        by_line: Mapping[int, Label],
+    ) -> _ScoredHit | None:
+        candidates: list[_ScoredHit] = []
+        hit = self._matcher.resolve(target, lines, window.width, window.height) if lines else None
         if hit is not None:
             label = by_line[id(hit.line)]
             candidates.append(
@@ -360,20 +596,16 @@ class InterfaceIndex:
         return self._matcher.resolve(target, [line], window.width, window.height)
 
     def _route_to(
-        self,
-        window: WindowSummary,
-        origin: int | None,
-        windows: dict[int, WindowSummary],
-        moves: Sequence[Transition],
+        self, window: WindowSummary, origin: int | None, ground: _Ground
     ) -> Route | NoRoute:
         if origin is None:
             start = latest_window(
-                [item for item in windows.values() if item.app_name == window.app_name]
+                [item for item in ground.windows.values() if item.app_name == window.app_name]
             )
             if start is None:
                 return NoRoute(NoRouteReason.ORIGIN_UNKNOWN)
             origin = start.screen_id
-        return self._route(window.screen_id, origin, windows, moves)
+        return self._route(window.screen_id, origin, ground)
 
     def map_outline(self) -> dict[str, AppOutline]:
         outgoing, incoming = _degrees(self._repo.transitions())
@@ -544,14 +776,77 @@ def _spread(origin: int, moves: Sequence[Transition]) -> _Spread:
     return _Spread(origin, outgoing, distance, ways, arrivals)
 
 
-def _route_step(move: Transition, windows: dict[int, WindowSummary]) -> RouteStep:
-    return RouteStep(
-        origin=windows[move.from_window],
-        action=dict(move.action),
-        target=windows[move.to_window],
-        success_count=move.success_count,
-        fail_count=move.fail_count,
+def _action_key(action: Mapping[str, Any]) -> str:
+    return json.dumps(action, sort_keys=True)
+
+
+def _click_target(action: Mapping[str, Any]) -> Target | None:
+    if action.get("action") not in _CLICKS:
+        return None
+    target = action.get("target")
+    if not isinstance(target, dict) or _target_text(target) is None:
+        return None
+    return Target.model_validate(target)
+
+
+# PR-041, PR-043, PR-045
+def _routable(move: Transition) -> bool:
+    if move.action.get("action") not in ROUTE_KINDS or move.fail_count > move.success_count:
+        return False
+    try:
+        Step.model_validate(move.action)
+    except ValidationError:
+        return False
+    return True
+
+
+def _wordy(text: str) -> bool:
+    letters = sum(1 for char in text if char.isalnum())
+    shown = sum(1 for char in text if not char.isspace())
+    return letters >= _MIN_ANCHOR_LETTERS and letters * 2 > shown
+
+
+# PR-048
+def _nearest_start(to_screen: int, from_screen: int, ground: _Ground) -> int | None:
+    incoming: dict[int, list[Transition]] = {}
+    for move in ground.moves:
+        incoming.setdefault(move.to_window, []).append(move)
+    distance = {to_screen: 0}
+    queue = deque([to_screen])
+    while queue:
+        node = queue.popleft()
+        for move in incoming.get(node, ()):
+            if move.from_window not in distance:
+                distance[move.from_window] = distance[node] + 1
+                queue.append(move.from_window)
+    app_name = ground.windows[to_screen].app_name
+    starts = [
+        screen_id
+        for screen_id, hops in distance.items()
+        if hops and screen_id != from_screen and ground.windows[screen_id].app_name == app_name
+    ]
+    return min(
+        starts,
+        key=lambda screen_id: (
+            distance[screen_id],
+            -ground.windows[screen_id].last_seen_at.timestamp(),
+            screen_id,
+        ),
+        default=None,
     )
+
+
+# PR-050
+def _one_per_navigation(scored: Sequence[_ScoredHit]) -> list[_ScoredHit]:
+    kept = [row for row in scored if row.where is not FindWhere.NAVIGATION]
+    grouped: dict[str, list[_ScoredHit]] = {}
+    for row in scored:
+        if row.where is FindWhere.NAVIGATION:
+            grouped.setdefault(row.window.app_name, []).append(row)
+    for rows in grouped.values():
+        best = max(rows, key=lambda row: (row.score, row.window.last_seen_at.timestamp()))
+        kept.append(replace(best, windows=len(rows)))
+    return kept
 
 
 # PR-013

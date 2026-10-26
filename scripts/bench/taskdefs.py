@@ -55,16 +55,16 @@ TIERS = (
 
 TAGS = frozenset({"text", "navigation", "scroll", "settings", "multi-app", "drag", "icons", "long"})
 
-SANDBOX_PHRASE = f"the {SANDBOX_DIR_NAME} folder in your home folder"
-SANDBOX_PHRASE_GEN = f"the {SANDBOX_DIR_NAME} folder in your home folder"
+SANDBOX_PHRASE = f"папке {SANDBOX_DIR_NAME} в домашней папке"
+SANDBOX_PHRASE_GEN = f"папки {SANDBOX_DIR_NAME} в домашней папке"
 
 DOCK_TILESIZE_PASS = 110
 
-DISPLAYS_TITLES = ("Displays",)
-SOUND_TITLES = ("Sound",)
-KEYBOARD_TITLES = ("Keyboard",)
-ABOUT_TITLES = ("About",)
-GENERAL_TITLES = ("General",)
+DISPLAYS_TITLES = ("Displays", "Мониторы")
+SOUND_TITLES = ("Sound", "Звук")
+KEYBOARD_TITLES = ("Keyboard", "Клавиатура")
+ABOUT_TITLES = ("About", "Об этом Mac")
+GENERAL_TITLES = ("General", "Основные")
 
 
 @dataclass(frozen=True)
@@ -118,7 +118,7 @@ TASKS: tuple[Task, ...] = (
     Task(
         id="calc-multiply",
         tier=TIER_SIMPLE,
-        instruction="Use Calculator to work out 47 times 89.",
+        instruction="Посчитай на калькуляторе 47 умножить на 89.",
         apps=(CALCULATOR,),
         tags=("text",),
         rationale=(
@@ -135,7 +135,7 @@ TASKS: tuple[Task, ...] = (
     Task(
         id="calc-percent",
         tier=TIER_SIMPLE,
-        instruction="Use Calculator to work out 15% of 240.",
+        instruction="Посчитай на калькуляторе, сколько будет 15% от 240.",
         apps=(CALCULATOR,),
         tags=("text",),
         rationale=(
@@ -153,8 +153,8 @@ TASKS: tuple[Task, ...] = (
         id="textedit-save",
         tier=TIER_SIMPLE,
         instruction=(
-            "Create a new TextEdit document with the text \"Report ready\" "
-            f"and save it in {SANDBOX_PHRASE} as note.txt."
+            "Создай в TextEdit новый документ с текстом «Отчёт готов» "
+            f"и сохрани его в {SANDBOX_PHRASE} под именем note.txt."
         ),
         apps=(TEXTEDIT, FINDER),
         tags=("text", "navigation"),
@@ -168,13 +168,13 @@ TASKS: tuple[Task, ...] = (
             "path rather than keycodes."
         ),
         setup=(ResetSandbox(), SnapshotTextEditDocuments()),
-        check=(FileContentEquals("note.txt", "Report ready", exact=True),),
+        check=(FileContentEquals("note.txt", "Отчёт готов", exact=True),),
         teardown=(CloseSandboxTextEditDocuments(), RemoveSandbox()),
     ),
     Task(
         id="finder-new-folder",
         tier=TIER_SIMPLE,
-        instruction=f"Create a new folder named Reports in {SANDBOX_PHRASE}.",
+        instruction=f"Создай в {SANDBOX_PHRASE} новую папку с именем Reports.",
         apps=(FINDER,),
         tags=("text", "navigation"),
         rationale=(
@@ -192,8 +192,8 @@ TASKS: tuple[Task, ...] = (
         id="textedit-append",
         tier=TIER_SIMPLE,
         instruction=(
-            f"Open journal.txt from {SANDBOX_PHRASE_GEN}, append "
-            "a new line \"line 2: closed\" at the end and save the file."
+            f"Открой файл journal.txt из {SANDBOX_PHRASE_GEN}, допиши в конец "
+            "новую строку «line 2: closed» и сохрани файл."
         ),
         apps=(TEXTEDIT, FINDER),
         tags=("text",),
@@ -215,7 +215,7 @@ TASKS: tuple[Task, ...] = (
     Task(
         id="settings-displays",
         tier=TIER_NAVIGATION,
-        instruction="Open System Settings and go to the Displays pane.",
+        instruction="Открой системные настройки и перейди в раздел «Мониторы».",
         apps=(SYSTEM_SETTINGS,),
         tags=("navigation",),
         rationale=(
@@ -231,7 +231,7 @@ TASKS: tuple[Task, ...] = (
     Task(
         id="settings-sound-below-fold",
         tier=TIER_NAVIGATION,
-        instruction="Open System Settings and go to the Sound pane.",
+        instruction="Открой системные настройки и перейди в раздел «Звук».",
         apps=(SYSTEM_SETTINGS,),
         tags=("navigation", "scroll"),
         rationale=(
@@ -247,7 +247,7 @@ TASKS: tuple[Task, ...] = (
     Task(
         id="settings-keyboard",
         tier=TIER_NAVIGATION,
-        instruction="Open the Keyboard settings.",
+        instruction="Открой настройки клавиатуры.",
         apps=(SYSTEM_SETTINGS,),
         tags=("navigation", "text"),
         rationale=(
@@ -265,14 +265,14 @@ TASKS: tuple[Task, ...] = (
         id="settings-about",
         tier=TIER_NAVIGATION,
         instruction=(
-            "Open the System Settings pane that describes this Mac — "
-            "the one showing the model, the memory and the serial number."
+            "Открой в системных настройках экран с информацией об этом Mac — "
+            "где показаны модель, объём памяти и серийный номер."
         ),
         apps=(SYSTEM_SETTINGS,),
         tags=("navigation",),
         rationale=(
             "Two levels deep, and the instruction names the contents rather than the "
-            "caption, so the model must map 'model, memory, serial number' onto a pane it "
+            "caption, so the model must map 'модель, память, серийный номер' onto a pane it "
             "either remembers or has to explore. Fails when the plan stops at the first "
             "level, which the title check catches: the window still reads 'General'."
         ),
@@ -283,7 +283,7 @@ TASKS: tuple[Task, ...] = (
     Task(
         id="dark-mode-on",
         tier=TIER_SETTINGS,
-        instruction="Turn on the system dark appearance.",
+        instruction="Включи тёмное оформление системы.",
         apps=(SYSTEM_SETTINGS,),
         tags=("settings", "navigation"),
         rationale=(
@@ -310,7 +310,7 @@ TASKS: tuple[Task, ...] = (
     Task(
         id="dock-autohide-on",
         tier=TIER_SETTINGS,
-        instruction="Make the Dock hide itself automatically.",
+        instruction="Сделай так, чтобы Док прятался автоматически.",
         apps=(SYSTEM_SETTINGS,),
         tags=("settings", "navigation"),
         rationale=(
@@ -336,7 +336,7 @@ TASKS: tuple[Task, ...] = (
     Task(
         id="dock-icon-size-max",
         tier=TIER_SETTINGS,
-        instruction="Make the Dock icons as large as they go.",
+        instruction="Сделай значки в Доке максимально крупными.",
         apps=(SYSTEM_SETTINGS,),
         tags=("settings", "drag"),
         rationale=(
@@ -363,8 +363,8 @@ TASKS: tuple[Task, ...] = (
         id="calc-to-file",
         tier=TIER_MULTI_APP,
         instruction=(
-            "Use Calculator to work out 128 times 64 and save the result "
-            f"into result.txt in {SANDBOX_PHRASE}."
+            "Посчитай на калькуляторе 128 умножить на 64 и сохрани получившееся число "
+            f"в файл result.txt в {SANDBOX_PHRASE}."
         ),
         apps=(CALCULATOR, TEXTEDIT, FINDER),
         tags=("multi-app", "text"),
@@ -383,9 +383,9 @@ TASKS: tuple[Task, ...] = (
         id="rename-from-doc",
         tier=TIER_MULTI_APP,
         instruction=(
-            f"{SANDBOX_PHRASE} holds target-name.txt, and inside it there is a name. "
-            "Rename unnamed-1.txt so that it carries that name "
-            "with the .txt extension."
+            f"В {SANDBOX_PHRASE} есть файл target-name.txt, внутри которого записано имя. "
+            "Переименуй файл unnamed-1.txt так, чтобы он назывался этим именем "
+            "с расширением .txt."
         ),
         apps=(TEXTEDIT, FINDER),
         tags=("multi-app", "text"),
@@ -399,11 +399,11 @@ TASKS: tuple[Task, ...] = (
         setup=(
             ResetSandbox(),
             WriteFile("target-name.txt", "quarterly-report\n"),
-            WriteFile("unnamed-1.txt", "contents\n"),
+            WriteFile("unnamed-1.txt", "содержимое\n"),
             SnapshotTextEditDocuments(),
         ),
         check=(
-            FileContentEquals("quarterly-report.txt", "contents", exact=False),
+            FileContentEquals("quarterly-report.txt", "содержимое", exact=False),
             PathIs("unnamed-1.txt", "absent"),
         ),
         teardown=(CloseSandboxTextEditDocuments(), RemoveSandbox()),
@@ -412,9 +412,9 @@ TASKS: tuple[Task, ...] = (
         id="sum-two-files",
         tier=TIER_MULTI_APP,
         instruction=(
-            f"{SANDBOX_PHRASE} holds a.txt and b.txt, each with a number inside. "
-            "Add those numbers in Calculator and write the sum into a new file sum.txt "
-            "in the same folder."
+            f"В {SANDBOX_PHRASE} лежат файлы a.txt и b.txt, в каждом по числу. "
+            "Сложи эти числа на калькуляторе и запиши сумму в новый файл sum.txt "
+            "в той же папке."
         ),
         apps=(CALCULATOR, TEXTEDIT, FINDER),
         tags=("multi-app", "text", "long"),
@@ -439,8 +439,8 @@ TASKS: tuple[Task, ...] = (
         id="rubber-band-move",
         tier=TIER_WEAK_SPOT,
         instruction=(
-            f"{SANDBOX_PHRASE} holds three text files. "
-            "Move all of them into an Archive folder inside it."
+            f"В {SANDBOX_PHRASE} лежат три текстовых файла. "
+            "Перемести их все в папку Archive внутри этой же папки."
         ),
         apps=(FINDER,),
         tags=("drag", "navigation"),
@@ -473,8 +473,8 @@ TASKS: tuple[Task, ...] = (
         id="settings-back-arrow",
         tier=TIER_WEAK_SPOT,
         instruction=(
-            "Open the System Settings pane that describes this Mac, "
-            "then go back to the previous pane."
+            "Открой в системных настройках экран с информацией об этом Mac, "
+            "а потом вернись на предыдущий экран."
         ),
         apps=(SYSTEM_SETTINGS,),
         tags=("icons", "navigation"),
@@ -494,8 +494,8 @@ TASKS: tuple[Task, ...] = (
         id="scroll-find-marker",
         tier=TIER_WEAK_SPOT,
         instruction=(
-            f"Open long.txt from {SANDBOX_PHRASE_GEN}, find the line MARKER-LINE in it, "
-            "replace it entirely with DONE-LINE and save the file."
+            f"Открой файл long.txt из {SANDBOX_PHRASE_GEN}, найди в нём строку MARKER-LINE, "
+            "замени её целиком на DONE-LINE и сохрани файл."
         ),
         apps=(TEXTEDIT, FINDER),
         tags=("scroll", "text", "long"),
@@ -517,7 +517,7 @@ TASKS: tuple[Task, ...] = (
     Task(
         id="drag-onto-folder",
         tier=TIER_WEAK_SPOT,
-        instruction=f"Drag invoice.txt into the Inbox folder inside {SANDBOX_PHRASE_GEN}.",
+        instruction=f"Перетащи файл invoice.txt в папку Inbox внутри {SANDBOX_PHRASE_GEN}.",
         apps=(FINDER,),
         tags=("drag",),
         rationale=(
@@ -535,8 +535,8 @@ TASKS: tuple[Task, ...] = (
         id="textedit-center-align",
         tier=TIER_WEAK_SPOT,
         instruction=(
-            f"Open styled.rtf from {SANDBOX_PHRASE_GEN}, centre all of its text "
-            "and save it."
+            f"Открой файл styled.rtf из {SANDBOX_PHRASE_GEN}, выровняй весь его текст "
+            "по центру и сохрани."
         ),
         apps=(TEXTEDIT, FINDER),
         tags=("icons", "text"),
@@ -556,9 +556,9 @@ TASKS: tuple[Task, ...] = (
         id="report-pipeline",
         tier=TIER_LONG,
         instruction=(
-            f"{SANDBOX_PHRASE} holds hours.txt and rate.txt, each with a number inside. "
-            "Create a Payroll folder there, multiply those numbers in Calculator "
-            "and save a document total.txt in Payroll with the line \"total: <number>\"."
+            f"В {SANDBOX_PHRASE} лежат файлы hours.txt и rate.txt, в каждом по числу. "
+            "Создай там папку Payroll, посчитай на калькуляторе произведение этих чисел "
+            "и сохрани в папке Payroll документ total.txt со строкой «total: <число>»."
         ),
         apps=(CALCULATOR, TEXTEDIT, FINDER),
         tags=("long", "multi-app", "text", "navigation"),
@@ -588,8 +588,8 @@ TASKS: tuple[Task, ...] = (
         id="sandbox-triage",
         tier=TIER_LONG,
         instruction=(
-            f"{SANDBOX_PHRASE} holds six files. Create two folders in it — Texts and "
-            "Notes — and sort the files: .txt into Texts, .md into Notes."
+            f"В {SANDBOX_PHRASE} лежат шесть файлов. Создай в ней две папки — Texts и "
+            "Notes — и разложи файлы: с расширением .txt в Texts, с расширением .md в Notes."
         ),
         apps=(FINDER,),
         tags=("long", "drag", "navigation"),

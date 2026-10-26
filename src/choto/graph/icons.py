@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import numpy as np
 from PIL import Image
@@ -11,6 +12,9 @@ from choto.models import BBox, IconLabelSource
 ICON_ELEMENT_CONFIDENCE = 1.0
 
 BORROWED_NAME_MARKER = " (borrowed name)"
+
+# PR-062
+TOOLTIP_LABELS_TRUSTED_SINCE = datetime(2026, 10, 21, 20, 0, tzinfo=UTC)
 
 
 def icon_element_text(label: str, *, at_home: bool) -> str:

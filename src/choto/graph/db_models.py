@@ -63,6 +63,7 @@ class Screen(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     app_name: Mapped[str] = mapped_column(String, nullable=False)
+    site: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     phash: Mapped[str] = mapped_column(String, nullable=False)
     window_title: Mapped[str] = mapped_column(String, nullable=False, default="")
     anchors: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
@@ -70,6 +71,8 @@ class Screen(TimestampMixin, Base):
     height: Mapped[int] = mapped_column(Integer, nullable=False)
     is_stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     glyph_scope: Mapped[str] = mapped_column(String, nullable=False, default="")
+    window_x: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    window_y: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scroll_covered_top: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scroll_covered_bottom: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scroll_viewport_h: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -88,7 +91,7 @@ class Screen(TimestampMixin, Base):
 
     __table_args__ = (
         Index("ix_screens_phash", "phash"),
-        Index("uq_screens_app_phash", "app_name", "phash", unique=True),
+        Index("uq_screens_app_site_phash", "app_name", "site", "phash", unique=True),
     )
 
 

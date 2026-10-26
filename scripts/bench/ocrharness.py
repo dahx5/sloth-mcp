@@ -124,8 +124,8 @@ _CALCULATOR_PROSE: tuple[str, ...] = (
     "Manage your overall setup and preferences for Mac, such as software",
     "Video transcription extraction",
     "Bypass permissions",
-    "Hyperion materials and correspondence",
-    "Accessibility check",
+    "Материалы и переписки Гипериона",
+    "Проверка доступности",
 )
 
 CALCULATOR_TRUTH = FixtureTruth(

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 from choto.graph.index import (
     AppCoverage,
+    AppNavigation,
     AppOutline,
     Entrance,
     FindHit,
@@ -56,6 +58,10 @@ _MAX_FIND_HITS = 5
 _MAX_ROUTE_STEPS = 6
 
 _MAX_ENTRANCES = 3
+
+_MAX_NAV_NAMES = 20
+
+_MAX_NAV_NAME_CHARS = 24
 
 MAX_DEPTH = 3
 DEFAULT_DEPTH = 1
@@ -167,6 +173,8 @@ def _path_label(path: Sequence[Any]) -> str:
 def action_label(action: dict[str, Any]) -> str:
     name = str(action.get("action", "?"))
     target = action.get("target")
+    if isinstance(target, dict):
+        target = target.get("text")
     if target:
         return f'{name} "{_clip(str(target))}"'
     path = action.get("path")
@@ -189,6 +197,16 @@ def action_label(action: dict[str, Any]) -> str:
 
 def _label_noise(text: str) -> int:
     return sum(1 for char in text if not char.isalnum() and char not in _LABEL_PUNCTUATION)
+
+
+def _plan_json(step: dict[str, Any]) -> str:
+    return json.dumps(step, ensure_ascii=False, separators=(",", ":"))
+
+
+# PR-052
+def _navigation_line(nav: AppNavigation) -> str:
+    names = ", ".join(_clip(name, _MAX_NAV_NAME_CHARS) for name in nav.names[:_MAX_NAV_NAMES])
+    return f"app navigation, in every window{_more_note(len(nav.names), _MAX_NAV_NAMES)}: {names}"
 
 
 def _pick_labels(labels: Sequence[Label], limit: int) -> list[Label]:
@@ -236,7 +254,7 @@ def _origin_clause(origin: RouteOrigin | None) -> str:
     return f"; {where} reaches {origin.reached} window(s), and this is not one of them"
 
 
-# PR-010
+# PR-010, PR-021
 def _step_confidence(step: RouteStep) -> str:
     if step.success_count:
         return ""
@@ -245,16 +263,22 @@ def _step_confidence(step: RouteStep) -> str:
     return " (unconfirmed)"
 
 
+# PR-049
+def _route_step_text(step: RouteStep) -> str:
+    stale = " STALE" if step.target.is_stale else ""
+    via = " via app navigation" if step.via_navigation else ""
+    return (
+        f"in #{step.origin.screen_id} -> #{step.target.screen_id}{stale}"
+        f"{_step_confidence(step)}{via}: {_plan_json(step.step)}"
+    )
+
+
 def _route_text(
     route: Route | NoRoute, origin: int | None, target: WindowSummary, now: datetime
 ) -> str:
     if isinstance(route, Route):
         shown = route.steps[:_MAX_ROUTE_STEPS]
-        moves = "; ".join(
-            f"in {_node_ref(step.origin)} {action_label(step.action)} "
-            f"-> #{step.target.screen_id}{_step_confidence(step)}"
-            for step in shown
-        )
+        moves = "; ".join(_route_step_text(step) for step in shown)
         hidden = route.hops - len(shown)
         if hidden > 0:
             moves += f"; (+{hidden} more step(s))"
@@ -266,7 +290,17 @@ def _route_text(
         )
         if route.crosses_apps:
             shape += ", leaves the app"
-        return f"route ({shape}): {moves}"
+        # PR-048
+        if route.instead_of is not None:
+            start = route.steps[0].origin
+            return (
+                f"route: none known from {_node_ref(route.instead_of)}; the nearest window that "
+                f"has one is {_node_ref(start)}, seen {format_when(start.last_seen_at, now)} — "
+                f"this route does NOT start at #{route.instead_of.screen_id}: get to "
+                f"#{start.screen_id} first "
+                f"({shape}): {moves}"
+            )
+        return f"route ({shape}; each step is ready for execute_plan): {moves}"
 
     # PR-015
     if route.reason is NoRouteReason.ALREADY_THERE:
@@ -308,6 +342,14 @@ def _offscreen_clause(offscreen: OffscreenHint) -> str:
 def _hit_line(hit: FindHit, now: datetime) -> str:
     stale = " STALE" if hit.window.is_stale else ""
     where = hit.where.value
+    # PR-050
+    if hit.where is FindWhere.NAVIGATION:
+        return (
+            f'"{hit.window.app_name}" {where} — "{_clip(hit.text)}" ({hit.tier} '
+            f"{hit.score:.2f}) in {hit.windows} window(s), a step from any of them reaches it; "
+            f"freshest is {_node_ref(hit.window)}{stale}, seen "
+            f"{format_when(hit.window.last_seen_at, now)}"
+        )
     if hit.where is FindWhere.TITLE:
         matched = f"{where} {_quoted_title(hit.text)}"
     else:
@@ -582,6 +624,9 @@ class RecallService:
         if icons:
             page.add(icons)
         page.add(_app_coverage_line(coverage))
+        navs = {app.app_name: self._index.navigation(app.app_name)}
+        if navs[app.app_name]:
+            page.add(_navigation_line(navs[app.app_name]))
         page.add(f"windows ({self._counted(len(windows), _MAX_WINDOWS)}), freshest first:")
         for item in coverage.windows[:_MAX_WINDOWS]:
             page.add(f"{_INDENT}{self._window_line(item.window, now, item.unexplored)}")
@@ -592,7 +637,7 @@ class RecallService:
             f"routes start at {_node_ref(root)}, last seen "
             f"{format_when(root.last_seen_at, now)} — still there unless something moved it:"
         )
-        self._render_node(page, now, root, depth=depth, shown={root.screen_id}, level=1)
+        self._render_node(page, now, root, depth, {root.screen_id}, level=1, navs=navs)
         page.add(
             f'next: recall(app_name="{app.app_name}", window="<title or #id>") to open another '
             'window, or recall(query="…") to search every app at once.'
@@ -644,7 +689,10 @@ class RecallService:
         page.add(self._route_line(target, origin, now))
         if coverage is not None:
             page.add(_window_coverage_line(coverage))
-        self._render_node(page, now, target, depth=depth, shown={target.screen_id}, level=0)
+        navs = {target.app_name: self._index.navigation(target.app_name)}
+        if navs[target.app_name]:
+            page.add(_navigation_line(navs[target.app_name]))
+        self._render_node(page, now, target, depth, {target.screen_id}, level=0, navs=navs)
         others = matches[1:]
         if others:
             named = ", ".join(
@@ -716,7 +764,8 @@ class RecallService:
         )
         for hit in report.hits:
             page.add(f"{_INDENT}{_hit_line(hit, now)}")
-            page.add(f"{_INDENT * 2}{_route_text(hit.route, None, hit.window, now)}")
+            if hit.route is not None:
+                page.add(f"{_INDENT * 2}{_route_text(hit.route, None, hit.window, now)}")
 
     def _holes_line(self, app_name: str | None) -> str:
         outlines = self._index.map_outline()
@@ -748,23 +797,31 @@ class RecallService:
         depth: int,
         shown: set[int],
         level: int,
+        navs: dict[str, AppNavigation],
     ) -> None:
         if page.truncated:
             return
-        self._render_labels(page, now, window, level)
-        self._render_transitions(page, now, window, depth, shown, level)
+        if window.app_name not in navs:
+            navs[window.app_name] = self._index.navigation(window.app_name)
+        self._render_labels(page, now, window, level, navs[window.app_name])
+        self._render_transitions(page, now, window, depth, shown, level, navs)
 
-    def _render_labels(self, page: _Page, now: datetime, window: WindowSummary, level: int) -> None:
+    # PR-052
+    def _render_labels(
+        self, page: _Page, now: datetime, window: WindowSummary, level: int, nav: AppNavigation
+    ) -> None:
         indent = _INDENT * (level + 1)
-        labels = self._repo.window_labels([window.screen_id]).get(window.screen_id, [])
+        stored = self._repo.window_labels([window.screen_id]).get(window.screen_id, [])
+        labels = [label for label in stored if not nav.holds(label.line)]
+        own = window.element_count - (len(stored) - len(labels))
         picked = _pick_labels(labels, _MAX_ELEMENTS)
         if not picked:
-            stamp = format_stamp(_labels_seen_at(labels, window), now)
-            page.add(f"{indent}elements: none readable (last read {stamp})")
+            stamp = format_stamp(_labels_seen_at(stored, window), now)
+            page.add(f"{indent}elements: none readable of its own (last read {stamp})")
             return
         read_at = format_stamp(_labels_seen_at(picked, window), now)
         page.add(
-            f"{indent}elements ({self._counted(window.element_count, len(picked))}, "
+            f"{indent}elements ({self._counted(own, len(picked))}, "
             f"read {read_at}): " + ", ".join(_clip(item.text.strip()) for item in picked)
         )
 
@@ -776,6 +833,7 @@ class RecallService:
         depth: int,
         shown: set[int],
         level: int,
+        navs: dict[str, AppNavigation],
     ) -> None:
         indent = _INDENT * (level + 1)
         moves = self._ranked_transitions(window.screen_id)
@@ -803,7 +861,7 @@ class RecallService:
             if repeated or depth <= 1:
                 continue
             shown.add(target.screen_id)
-            self._render_node(page, now, target, depth - 1, shown, level + 2)
+            self._render_node(page, now, target, depth - 1, shown, level + 2, navs)
         _add_more(page, indent + _INDENT, len(moves), _MAX_TRANSITIONS, "transition(s)")
 
     def _ranked_transitions(self, screen_id: int) -> list[Transition]:

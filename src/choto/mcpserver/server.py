@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import contextlib
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import Any
 
-from anyio import to_thread
+from anyio import lowlevel, to_thread
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
@@ -47,10 +48,10 @@ from choto.graph.eviction import evict
 from choto.graph.repository import GraphRepository
 from choto.inputctl.protocol import InputBackend
 from choto.log import get_logger
+from choto.matching.embeddings import installed_models
 from choto.matching.matcher import TargetMatcher
 from choto.mcpserver.toolspec import (
     ANNOTATE_DESCRIPTION,
-    EXECUTE_DESCRIPTION,
     FOCUS_DESCRIPTION,
     MISSION_FINISH_DESCRIPTION,
     MISSION_MARK_DESCRIPTION,
@@ -60,7 +61,9 @@ from choto.mcpserver.toolspec import (
     OBSERVE_DESCRIPTION,
     PROBE_TOOLTIPS_DESCRIPTION,
     RECALL_DESCRIPTION,
+    SERVER_INSTRUCTIONS,
     SUBMIT_DESCRIPTION,
+    execute_description,
 )
 from choto.missionsvc import MissionService
 from choto.models import BBox, ElementKind, ExecutionReport, Plan, RunStatus
@@ -284,6 +287,13 @@ def _render_observation(context: AppContext, observation: _Observation) -> list[
     summary_lines = [
         f"app: {state.app_name}",
         f"window: {area.window_line()}",
+        # PR-055
+        f"window_id: #{result.screen_db_id}"
+        if result.screen_db_id is not None
+        # PR-058
+        else f"window_id: none — {result.unmapped}"
+        if result.unmapped
+        else "window_id: none — this reading has no window scope and is not in the map",
         f"open_windows: {window_titles(open_windows)}",
         f"known_window: {result.from_cache}",
         f"size_px: {state.width}x{state.height}",
@@ -311,6 +321,8 @@ def execute_plan_impl(
     mission_item_id: int | None = None,
     llm_version_tag: str = "",
 ) -> list[Any]:
+    # PR-060
+    asked_at = time.monotonic()
     try:
         plan = Plan.model_validate({"steps": steps})
     except ValidationError as exc:
@@ -320,7 +332,7 @@ def execute_plan_impl(
         return reply
 
     try:
-        report = _run_plan(context, plan)
+        report = _run_plan(context, plan, asked_at)
     except ResourceBusyError as exc:
         refused: list[Any] = [f"execute_plan did nothing: {exc}"]
         if mission_item_id is not None:
@@ -348,7 +360,7 @@ def _status_block(context: AppContext) -> str:
     )
 
 
-def _run_plan(context: AppContext, plan: Plan) -> ExecutionReport:
+def _run_plan(context: AppContext, plan: Plan, asked_at: float) -> ExecutionReport:
     with screen(context):
         reader = context.new_reader()
         try:
@@ -362,7 +374,7 @@ def _run_plan(context: AppContext, plan: Plan) -> ExecutionReport:
                 context.settings,
                 context.overlay,
             )
-            report = executor.execute(plan)
+            report = executor.execute(plan, asked_at=asked_at)
         finally:
             reader.close()
 
@@ -375,6 +387,8 @@ def _render_report(report: ExecutionReport) -> list[Any]:
         f"status: {report.status.value}\n"
         f"completed_steps: {report.completed_steps}\n"
         + (f"failed_step: {report.failed_step}\n" if report.failed_step is not None else "")
+        # PR-060
+        + (f"resume_from_step: {report.resume_step}\n" if report.resume_step is not None else "")
         + (f"reason: {report.reason}\n" if report.reason else "")
         + "journey:\n"
         + "\n".join(report.journey)
@@ -580,11 +594,13 @@ def mission_finish_impl(context: AppContext, status: str) -> str:
 
 
 def mission_replay_impl(context: AppContext, item_id: int, llm_version_tag: str = "") -> list[Any]:
+    # PR-060
+    asked_at = time.monotonic()
     try:
         with checklist(context):
             outcome = context.missions().replay(
                 item_id,
-                lambda plan: _run_plan(context, plan),
+                lambda plan: _run_plan(context, plan, asked_at),
                 llm_version_tag,
             )
     except ResourceBusyError as exc:
@@ -609,17 +625,24 @@ async def _in_worker_thread[T](
 ) -> T:
     if isinstance(context, PlatformError):
         raise ToolError(str(context))
-    return await to_thread.run_sync(func, context, *args)
+    answer = await to_thread.run_sync(func, context, *args)
+    # PR-061
+    await lowlevel.checkpoint_if_cancelled()
+    return answer
 
 
 def create_mcp(context: AppContext | PlatformError) -> FastMCP:
-    mcp = FastMCP("choto")
+    # PR-055
+    mcp = FastMCP("choto", instructions=SERVER_INSTRUCTIONS)
 
     @mcp.tool(description=OBSERVE_DESCRIPTION, structured_output=False)
     async def observe() -> list[Any]:
         return await _in_worker_thread(observe_impl, context)
 
-    @mcp.tool(description=EXECUTE_DESCRIPTION, structured_output=False)
+    # PR-056
+    semantic = any(model.folder is not None for model in installed_models())
+
+    @mcp.tool(description=execute_description(semantic), structured_output=False)
     async def execute_plan(
         steps: list[dict[str, Any]],
         mission_item_id: int | None = None,

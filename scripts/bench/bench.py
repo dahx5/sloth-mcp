@@ -48,9 +48,9 @@ TEXTEDIT_APP = "TextEdit"
 
 MARKER_PREFIX = "Choto benchmark run"
 
-PANGRAM = "the quick brown fox jumps over the lazy dog"
+PANGRAM = "съешь ещё этих мягких французских булок"
 
-MARKER_FRAGMENT = "jumps over the lazy dog"
+MARKER_FRAGMENT = "мягких французских булок"
 
 ARM_BATCHED = "batched"
 ARM_PER_STEP = "per-step"
@@ -62,8 +62,8 @@ _SAVE_SHEET_MARKERS = (
     "do you want to save",
     "don't save",
     "dont save",
-    "do you want to save",
-    "don't save",
+    "хотите сохранить",
+    "не сохранять",
 )
 
 LAUNCH_TIMEOUT_MS = 15_000

@@ -134,6 +134,9 @@ class MissionService:
                     f"{block}"
                 )
             return block
+        # PR-060
+        if report.status is RunStatus.PAUSED:
+            return self._paused(item_id, report)
         return self._mark(item_id, MissionItemStatus.FAILED, fail_reason=_failure_reason(report))
 
     def replay(self, item_id: int, runner: PlanRunner, llm_version_tag: str = "") -> ReplayOutcome:
@@ -195,12 +198,27 @@ class MissionService:
         if report.status is RunStatus.SUCCESS:
             notes.extend(_route_notes(item_id, saved, _route(report.seen_screens)))
             block = self._mark(item_id, MissionItemStatus.PASSED)
+        # PR-060
+        elif report.status is RunStatus.PAUSED:
+            block = self._paused(item_id, report)
         else:
             block = self._mark(
                 item_id, MissionItemStatus.FAILED, fail_reason=_failure_reason(report)
             )
         _log.info("mission.replayed", item_id=item_id, status=report.status.value)
         return ReplayOutcome(report, "\n".join([*notes, block]))
+
+    # PR-060
+    def _paused(self, item_id: int, report: ExecutionReport) -> str:
+        mission = self._repo.active_mission()
+        if mission is None:
+            return _NO_ACTIVE_MISSION
+        return (
+            f"item #{item_id} is neither passed nor failed: the run was paused by the reply "
+            f"time budget before step {report.resume_step}. Resend the remaining steps "
+            f"starting from step {report.resume_step} with mission_item_id={item_id}.\n"
+            f"{render_status(mission)}"
+        )
 
     def _mark(
         self,

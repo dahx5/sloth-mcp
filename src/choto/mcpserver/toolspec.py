@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+# PR-055
+SERVER_INSTRUCTIONS = (
+    "Choto sees and drives this Mac's screen. Work in this order: recall first — it "
+    "is free, needs no screenshot, and for a window it knows it returns the route as "
+    "ready execute_plan steps; then execute_plan; observe only when recall has no map "
+    "of the window you need, or its map is too old or marked STALE to plan against. "
+    "observe prints the window's id (#N), the same id recall(window='#N') and "
+    "from_window take."
+)
+
+# PR-055
 OBSERVE_DESCRIPTION = (
     "Capture the frontmost window and return a screenshot plus a textual listing "
-    "of its text elements. Use this once before planning a batch of actions. "
+    "of its text elements. Call recall first: it costs no screenshot and already "
+    "holds every window Choto has seen. Use observe when recall has no map of the "
+    "window you need, or its map is too old or STALE to plan against. "
     "TWO SURFACES: the elements come in two labelled blocks, because a step "
     "searches exactly one of them. 'elements in focus window (N)' is the focus "
     "window — the default search space of every step, and all a plain target can "
@@ -13,10 +26,12 @@ OBSERVE_DESCRIPTION = (
     "since the dropped-down menu is chrome too, not part of the window. The "
     "chrome block is printed even when it is empty (M=0), with the reason. "
     "The reply also contains: the frontmost app name; which window was read "
-    "(window); every window that app has open (open_windows) — quote a piece of "
-    "one of those titles as target.window in execute_plan to work in a window "
-    "other than the frontmost; whether this window is already known to the "
-    "interface graph (known_window); the screen size in both pixels "
+    "(window) and its id in the map (window_id '#N' — what recall(window='#N') and "
+    "recall(from_window='#N') take); every window that app has open "
+    "(open_windows) — quote a piece of one of those titles as target.window in "
+    "execute_plan to work in a window other than the frontmost; whether this "
+    "window is already known to the interface graph (known_window); the screen "
+    "size in both pixels "
     "(OCR/element coordinates) and logical points (click coordinates); which "
     "area was scanned for single-character labels (single_character_scan); and, "
     "when there is text on neither surface, how much of it there is "
@@ -27,7 +42,15 @@ OBSERVE_DESCRIPTION = (
     "(icons, images)."
 )
 
-EXECUTE_DESCRIPTION = (
+_MATCHING_TIERS = {
+    True: "matching is exact, then fuzzy, then semantic (by meaning). ",
+    False: (
+        "matching is exact, then fuzzy; there is no semantic tier on this machine (no "
+        "embedding model is installed), so name the text as it is drawn. "
+    ),
+}
+
+_EXECUTE_HEAD = (
     "Execute a batch of semantic UI steps and return a compact journey. Each "
     "step is an object: {action, target?, path?, modifiers?, text?, keys?, amount?, "
     "app_name?, from_text?, to_text?, scroll?, until_readout?, skip_if_absent?, expect?, "
@@ -37,7 +60,10 @@ EXECUTE_DESCRIPTION = (
     "target={text, scope?, region?, window?, scroll_to_find?} selects an element by its "
     "visible text "
     "(region is one of top/bottom/left/right/center to disambiguate duplicates); "
-    "matching is exact, then fuzzy, then semantic. click/double_click/right_click "
+)
+
+_EXECUTE_BODY = (
+    "click/double_click/right_click "
     "need a target; drag needs path; type needs text; hotkey needs keys (e.g. "
     "['cmd','shift','4']); "
     "scroll needs amount (positive scrolls down; add a target to scroll over it); "
@@ -169,7 +195,9 @@ EXECUTE_DESCRIPTION = (
     "listing and the closest on-screen texts to the target that missed, so you can "
     "correct the plan and resend from the failure. If the user moves the mouse to "
     "the top-left corner the run returns status=aborted. "
-    "EVERY reply — success, escalation or abort — ends with 'windows seen during "
+    "status=paused means the run was stopped by the reply time budget between "
+    "steps; resend the remaining steps starting from resume_from_step. "
+    "EVERY reply — success, escalation, abort or pause — ends with 'windows seen during "
     "this run': each distinct window the run passed through, with its app, its "
     "title and a sample of its text. That makes a deliberately short 'go and "
     "look' plan (focus_app, one click, a wait) the cheap way to explore an "
@@ -180,12 +208,19 @@ EXECUTE_DESCRIPTION = (
     "checklist (mission_start). A successful run marks that item passed and "
     "keeps these exact steps as its recipe, with a fingerprint of the world they "
     "worked in, so mission_replay(N) can repeat them later; any other outcome "
-    "marks it failed with this run's own reason. Either way the reply ends with "
+    "marks it failed with this run's own reason; a paused run leaves the item "
+    "open. Either way the reply ends with "
     "the mission status block — goal, progress, the item now in play — so a long "
     "scenario never rests on your memory of it. llm_version_tag is how you label "
     "the model driving the run: it is stored with the recipe and compared before "
     "a replay. Leave both out for an ordinary run."
 )
+
+
+# PR-056
+def execute_description(semantic: bool) -> str:
+    return _EXECUTE_HEAD + _MATCHING_TIERS[semantic] + _EXECUTE_BODY
+
 
 FOCUS_DESCRIPTION = (
     "Bring an application to the front by its name (e.g. 'System Settings', "
@@ -199,9 +234,11 @@ FOCUS_DESCRIPTION = (
     "confirmed)."
 )
 
+# PR-055
 RECALL_DESCRIPTION = (
     "Ask what Choto already remembers about an interface, as text — call this "
-    "BEFORE observing or planning. A screenshot costs ~1400 tokens; this map "
+    "FIRST, before execute_plan and instead of observe; observe only when the window "
+    "you need is not here. A screenshot costs ~1400 tokens; this map "
     "costs a few hundred, so a window that has been visited before does not have "
     "to be looked at again to be planned against. "
     "The map is BY WINDOW and holds windows only: everything listed is inside "
@@ -214,8 +251,12 @@ RECALL_DESCRIPTION = (
     "when it was last seen; with app_name you get that app's windows plus the "
     "contents and outgoing transitions of the one it was last seen in; "
     "with app_name and window you get that one window — its text elements and "
-    "its transitions, each reading 'click X -> window Y'. window is a piece of a "
-    "window title (case-insensitive) or a node id such as '#5'; app_name matches "
+    "its transitions, each reading 'click X -> window Y'. An app's navigation — the "
+    "sidebar or tab strip that is the same in most of its windows — is printed once "
+    "per app ('app navigation, in every window: ...') and left out of each window's "
+    "own elements; a step reaches it from any window. window is a piece of a window "
+    "title (case-insensitive in any alphabet, any kind of dash) or a node id such as "
+    "'#5' — the id observe prints as window_id; app_name matches "
     "exactly first, then as a substring ('settings' finds 'System Settings'). "
     "depth (default 1, max 3) unfolds that many levels of transitions; a branch "
     "leading back to a window already printed is marked '[shown above]' instead "
@@ -225,13 +266,20 @@ RECALL_DESCRIPTION = (
     "every window title at once, with the same matcher a step's target uses, so "
     "a hit means a step aiming at that text would resolve to it. Each hit names "
     "the app, the window, what matched, how fresh it is, and the ROUTE to it. "
-    "Add app_name to narrow the search. "
-    'Routes read \'in #1 "Main" click "General" -> #2\': that is the plan, in '
-    "order, in the terms execute_plan takes. They start where the app was last "
+    "A hit in an app's navigation is one line per app, after the windows whose own "
+    "content matched. Add app_name to narrow the search. "
+    "A route is a list of steps, each 'in #1 -> #2: {json}' where {json} is a "
+    "complete execute_plan step — the recorded action with all its fields plus an "
+    "expect that checks arrival in #2 — so the steps can be sent as they are, in "
+    "order. A step marked (unconfirmed) has never had its arrival verified; "
+    "'via app navigation' means the click was recorded in another window and works "
+    "from any window showing that navigation. Routes start where the app was last "
     "seen — the window most recently read, which is where it still is unless "
     "something moved it since — unless you name from_window (a title or "
-    "'#id'). When there is no route the reply names what is missing rather than "
-    "saying no: which window cannot be reached, which recorded window leads "
+    "'#id'). When nothing leads there from that window but another known window "
+    "has a way, the route starts at that window and the reply says so plainly: get "
+    "there first. When there is no route at all the reply names what is missing "
+    "rather than saying no: which window cannot be reached, which recorded window leads "
     "into it (and whether that one was ever entered either), and what the "
     "starting window knows — how many windows it reaches, or that nothing has "
     "ever been clicked in it. That names the next thing to go and look at "
@@ -405,5 +453,7 @@ MISSION_REPLAY_DESCRIPTION = (
     "llm_version_tag labels the model driving this replay and is compared with "
     "the one stored on the recipe. The reply is the run's journey, the ledger, "
     "the preflight notes and the mission status; a failed replay fails the item "
-    "with the run's own reason."
+    "with the run's own reason. status=paused means the replay was stopped by the "
+    "reply time budget between steps and the item stays open; resend the remaining "
+    "steps starting from resume_from_step."
 )

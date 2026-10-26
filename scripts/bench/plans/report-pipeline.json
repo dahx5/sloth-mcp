@@ -19,7 +19,7 @@
   },
   {
    "action": "type",
-   "text": "~/choto-bench-sandbox",
+   "text": "/Users/danilrepinin/choto-bench-sandbox",
    "timeout_ms": 8000
   },
   {
@@ -89,7 +89,7 @@
   },
   {
    "action": "type",
-   "text": "~/choto-bench-sandbox/hours.txt",
+   "text": "/Users/danilrepinin/choto-bench-sandbox/hours.txt",
    "timeout_ms": 8000
   },
   {
@@ -195,7 +195,7 @@
   },
   {
    "action": "type",
-   "text": "~/choto-bench-sandbox/rate.txt",
+   "text": "/Users/danilrepinin/choto-bench-sandbox/rate.txt",
    "timeout_ms": 8000
   },
   {
@@ -340,7 +340,7 @@
   },
   {
    "action": "type",
-   "text": "~/choto-bench-sandbox/Payroll",
+   "text": "/Users/danilrepinin/choto-bench-sandbox/Payroll",
    "timeout_ms": 8000
   },
   {

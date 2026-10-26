@@ -44,7 +44,7 @@ class Region(str, Enum):
     It is a **preference between equals, not a filter**, and it is measured
     inside the window the step works in rather than across the display. Both
     halves of that sentence are corrections a live run paid for: a plan clicking
-    "Previous character" with ``region="left"`` was refused although the button
+    "Предыдущий персонаж" with ``region="left"`` was refused although the button
     was on screen and matched exactly — it sat at x=50% of the *display*, one
     pixel outside a rectangle that has nothing to do with the window — and the
     executor then scrolled the game five notches down and five back looking for
@@ -604,6 +604,8 @@ class RunStatus(str, Enum):
     SUCCESS = "success"
     ESCALATED = "escalated"
     ABORTED = "aborted"
+    # PR-060
+    PAUSED = "paused"
 
 
 class ElementKind(str, Enum):
@@ -756,6 +758,8 @@ class ExecutionReport(BaseModel):
     status: RunStatus
     completed_steps: list[int]
     failed_step: int | None = None
+    # PR-060
+    resume_step: int | None = None
     reason: str | None = None
     journey: list[str]
     screenshot_png: bytes | None = None

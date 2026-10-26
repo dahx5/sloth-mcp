@@ -30,7 +30,7 @@
   },
   {
    "action": "type",
-   "text": "~/choto-bench-sandbox/a.txt",
+   "text": "/Users/danilrepinin/choto-bench-sandbox/a.txt",
    "timeout_ms": 8000
   },
   {
@@ -136,7 +136,7 @@
   },
   {
    "action": "type",
-   "text": "~/choto-bench-sandbox/b.txt",
+   "text": "/Users/danilrepinin/choto-bench-sandbox/b.txt",
    "timeout_ms": 8000
   },
   {
@@ -276,7 +276,7 @@
   },
   {
    "action": "type",
-   "text": "~/choto-bench-sandbox",
+   "text": "/Users/danilrepinin/choto-bench-sandbox",
    "timeout_ms": 8000
   },
   {

@@ -9,7 +9,37 @@ _MIN_STEM_CHARS = 4
 
 _WORD_RE = re.compile(r"\w+")
 
+_YO = str.maketrans({"ё": "е"})
+
 POLARITY_PAIRS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("вперед",), ("назад",)),
+    (("далее", "дальше"), ("назад", "обратно")),
+    (("предыдущ-",), ("следующ-",)),
+    (("откры-",), ("закры-",)),
+    (("включ-",), ("выключ-",)),
+    (("подключ-", "соедин-"), ("отключ-", "отсоедин-")),
+    (("показ-", "отобрази-"), ("скры-", "спрятат-")),
+    (("добав-",), ("удали-", "удале-", "убрат-")),
+    (("создат-", "создай", "создан-"), ("удали-", "удале-")),
+    (("установ-", "инсталл-"), ("деинсталл-", "удали-", "удале-")),
+    (("старт", "запуст-", "запуск-", "начать", "начни"), ("стоп", "останов-", "заверш-")),
+    (("вверх", "выше"), ("вниз", "ниже")),
+    (("влево", "налево"), ("вправо", "направо")),
+    (("больше", "увелич-", "прибав-"), ("меньше", "уменьш-", "убав-")),
+    (("разверн-", "раскры-"), ("сверн-",)),
+    (("войти", "войдите", "вход"), ("выйти", "выйдите", "выход")),
+    (("да",), ("нет",)),
+    (
+        ("принять", "принима-", "согласит-", "подтверд-", "разреш-"),
+        ("отклон-", "отказат-", "запрет-", "заблокир-", "отмен-"),
+    ),
+    (("прочит-",), ("непрочит-",)),
+    (
+        ("закрепи-", "прикрепи-"),
+        ("открепи-", "открепл-"),
+    ),
+    (("подписат-", "подписк-"), ("отписат-", "отписк-")),
+    (("импорт-",), ("экспорт-",)),
     (("previous", "prev", "earlier"), ("next", "later")),
     (("back", "backward", "backwards"), ("forward", "forwards")),
     (("open-",), ("close-",)),
@@ -99,7 +129,7 @@ def polarity_guard(text: str) -> PolarityGuard:
 
 
 def _tokens(text: str) -> list[str]:
-    return _WORD_RE.findall(text.casefold())
+    return _WORD_RE.findall(text.casefold().translate(_YO))
 
 
 def _matches(token: str, marker: str) -> bool:
@@ -138,10 +168,10 @@ def _validate(pairs: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...]) -> Non
         for markers in (left, right):
             for marker in markers:
                 body = _body(marker)
-                if not _WORD_RE.fullmatch(body) or body != body.casefold():
+                if not _WORD_RE.fullmatch(body) or body != body.casefold().translate(_YO):
                     raise ValueError(
                         f"Polarity marker {marker!r} must be one casefolded word "
-                        "of letters or digits"
+                        "of letters or digits, spelled with 'е' rather than 'ё'"
                     )
                 if marker.endswith(_STEM_SUFFIX) and len(body) < _MIN_STEM_CHARS:
                     raise ValueError(

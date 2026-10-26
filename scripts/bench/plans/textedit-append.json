@@ -30,7 +30,7 @@
   },
   {
    "action": "type",
-   "text": "~/choto-bench-sandbox/journal.txt",
+   "text": "/Users/danilrepinin/choto-bench-sandbox/journal.txt",
    "timeout_ms": 8000
   },
   {

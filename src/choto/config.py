@@ -17,6 +17,18 @@ OCR_ENGINE_APPLE_VISION = "apple_vision"
 PLATFORM_AUTO = "auto"
 PLATFORM_MACOS = "macos"
 
+# PR-037
+DEFAULT_BROWSER_APPS = (
+    "Safari",
+    "Google Chrome",
+    "Arc",
+    "Firefox",
+    "Microsoft Edge",
+    "Brave Browser",
+    "Chromium",
+    "Yandex",
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -96,6 +108,22 @@ class Settings(BaseSettings):
             "anything is clicked rather than run until the budget runs out mid-search. It "
             "cannot be raised past choto.config.MAX_ACTIONS_PER_PLAN, which is also the "
             "largest plan the models layer accepts."
+        ),
+    )
+
+    # PR-060
+    plan_reply_budget_s: float = Field(
+        default=40.0,
+        gt=0.0,
+        description=(
+            "How long execute_plan may run before it answers, counted from the moment the "
+            "call arrived. An MCP client gives up on a call after a minute or so, and a plan "
+            "that is still clicking then has nobody left to read its result: the steps are "
+            "done, the reply is lost, and the caller retries a plan that already ran. Past "
+            "this many seconds the run stops between two steps — never inside one — and "
+            "answers with what it has done and the step to resume from. The step that is "
+            "running when the budget runs out finishes first, so the reply can come as late "
+            "as this plus that step's own timeout; leave the client that much headroom."
         ),
     )
 
@@ -362,6 +390,22 @@ class Settings(BaseSettings):
             "every retained row, so a count taken from a moment inside the retained stretch "
             "is exact, and one taken from before it returns the whole retained stretch, which "
             "is the cap and therefore already clears the threshold."
+        ),
+    )
+
+    browser_apps: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_BROWSER_APPS),
+        description=(
+            "Applications whose windows are web pages rather than screens of one program, "
+            "by the name the window server gives their owner. A browser window carries "
+            "something no native window does — the address bar — and for these "
+            "applications the site read out of it is part of a window node's identity: "
+            "two pages on different sites are different nodes however alike they look. "
+            "The browser's own band (tabs, address bar, bookmarks bar) is cut out of the "
+            "picture the node is hashed from and out of the texts it is recognized by, "
+            "because it is the same on every page and tells none of them apart. An "
+            "application missing from the list is treated as a native program: its pages "
+            "mix across sites and its tab strip votes on which page this is."
         ),
     )
 
